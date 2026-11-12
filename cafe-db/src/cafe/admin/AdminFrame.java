@@ -368,7 +368,19 @@ public class AdminFrame extends JFrame {
         if (sel >= 0) keepId = (Integer) menuModel.getValueAt(sel, 0);
         menuModel.setRowCount(0);
         for (MenuItem m : store.menuSnapshot()) {
-            String state = m.manualSoldOut ? "품절 (수동)" : (m.stock <= 0 ? "품절 (재고 소진)" : "판매 중");
+		
+		String state;
+		
+		if (m.manualSoldOut) {
+		    state = "품절 (수동)";
+		} else if (m.stock <= 0) {
+		    state = "품절 (재고 소진)";
+		} else if (m.stock <= 5) {
+		    state = "재고 부족";
+		} else {
+		    state = "판매 중";
+		}
+
             menuModel.addRow(new Object[] { m.id, m.category, m.name, UiUtil.won(m.price), m.stock, state });
         }
         if (keepId >= 0) {
