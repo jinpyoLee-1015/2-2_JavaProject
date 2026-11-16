@@ -29,23 +29,29 @@ CREATE TABLE IF NOT EXISTS menu (
     price           INT         NOT NULL,
     stock           INT         NOT NULL DEFAULT 0,
     manual_sold_out BOOLEAN     NOT NULL DEFAULT FALSE,
-    PRIMARY KEY (id)
+    PRIMARY KEY (id),
+    CONSTRAINT chk_menu_price CHECK (price >= 0),
+    CONSTRAINT chk_menu_stock CHECK (stock >= 0)
 );
 
--- 주문 (대기번호 = order_no)
+-- 주문
+-- order_no 는 주문 고유번호(계속 증가), daily_no 는 화면에 보여 줄 당일 대기번호(매일 1번부터).
 -- member_id 에는 외래키를 걸지 않았다: 회원이 탈퇴해도 지난 주문 기록(통계)을 남기기 위해.
 -- 그래서 member_name 도 주문 시점의 이름을 함께 저장한다.
 CREATE TABLE IF NOT EXISTS orders (
     order_no    INT         NOT NULL AUTO_INCREMENT,
+    daily_no    INT         NOT NULL COMMENT '당일 대기번호 (매일 1번부터)',
     member_id   VARCHAR(15) NOT NULL,
     member_name VARCHAR(20) NOT NULL,
-    status      VARCHAR(10) NOT NULL DEFAULT 'WAITING'
-                COMMENT 'WAITING / MAKING / READY / DONE / CANCELED',
+    status      ENUM('WAITING','MAKING','READY','DONE','CANCELED') NOT NULL DEFAULT 'WAITING',
     order_time  DATETIME(3) NOT NULL,
+    order_date  DATE AS (DATE(order_time)) STORED COMMENT '주문 날짜 (order_time 에서 자동 계산)',
     PRIMARY KEY (order_no),
+    UNIQUE KEY uq_orders_daily (order_date, daily_no),
     KEY idx_orders_member (member_id),
     KEY idx_orders_status (status),
-    KEY idx_orders_time (order_time)
+    KEY idx_orders_time (order_time),
+    CONSTRAINT chk_orders_daily_no CHECK (daily_no >= 1)
 );
 
 -- 주문 상세 (주문 1건 : 메뉴 여러 줄)
@@ -61,8 +67,15 @@ CREATE TABLE IF NOT EXISTS order_items (
     unit_price INT         NOT NULL COMMENT '주문 당시 단가(옵션 포함)',
     PRIMARY KEY (id),
     KEY idx_items_menu (menu_id),
+    CONSTRAINT chk_items_qty        CHECK (qty >= 1),
+    CONSTRAINT chk_items_shots      CHECK (shots >= 0),
+    CONSTRAINT chk_items_unit_price CHECK (unit_price >= 0),
+    CONSTRAINT chk_items_size       CHECK (opt_size IN ('기본','라지')),
     CONSTRAINT fk_items_order FOREIGN KEY (order_no) REFERENCES orders (order_no) ON DELETE CASCADE
 );
+
+-- CHECK 제약은 MySQL 8.0.16 이상에서만 실제로 검사된다. (그 미만 버전은 문법만 받아들이고 무시)
+-- 예전 구조로 이미 만든 DB 는 관리자 프로그램이 시작할 때 SchemaMigration 이 새 구조로 자동 변경한다.
 
 -- 초기 메뉴 9개는 관리자 프로그램이 처음 실행될 때 menu 테이블이 비어 있으면 자동으로 넣는다.
 

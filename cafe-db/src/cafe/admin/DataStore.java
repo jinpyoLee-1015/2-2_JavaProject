@@ -33,24 +33,40 @@ public class DataStore {
 
     private static final String DB_ERROR = "데이터베이스 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.";
     private static final int MYSQL_DUPLICATE_KEY = 1062;
+    private static final int MYSQL_CHECK_VIOLATED = 3819;
     private static final String QUEUED_SQL = "('WAITING','MAKING')";
 
     private static final String ORDER_SELECT =
-            "SELECT o.order_no, o.member_id, o.member_name, o.status, o.order_time, "
+            "SELECT o.order_no, o.daily_no, o.member_id, o.member_name, o.status, o.order_time, "
                     + "i.menu_id, i.menu_name, i.opt_size, i.shots, i.qty, i.unit_price "
                     + "FROM orders o LEFT JOIN order_items i ON i.order_no = o.order_no ";
 
     private final List<Listener> listeners = new CopyOnWriteArrayList<>();
     private volatile Consumer<String> log = s -> {};
+    /** setLog 전에 생긴 로그 (DB 구조 업데이트 결과 등) */
+    private final List<String> startupLog = new ArrayList<>();
 
-    /** DB 에 연결해 보고, 메뉴가 비어 있으면 기본 메뉴를 넣는다. */
+    /** DB 에 연결해 보고, 예전 구조면 새 구조로 맞춘 뒤, 메뉴가 비어 있으면 기본 메뉴를 넣는다. */
     public DataStore() throws SQLException {
+        migrateSchema();
         seedMenuIfEmpty();
+    }
+
+    private void migrateSchema() throws SQLException {
+        SchemaMigration m = new SchemaMigration();
+        try (Connection c = DBConnect.get()) {
+            m.run(c);
+        }
+        for (String msg : m.messages()) startupLog.add("[DB 업데이트] " + msg);
     }
 
     public void addListener(Listener l) { listeners.add(l); }
     public void removeListener(Listener l) { listeners.remove(l); }
-    public void setLog(Consumer<String> log) { this.log = log; }
+    public void setLog(Consumer<String> log) {
+        this.log = log;
+        for (String s : startupLog) log.accept(s);
+        startupLog.clear();
+    }
     public String getDbInfo() { return DBConnect.describe(); }
 
     private String dbError(SQLException e) {
@@ -87,9 +103,9 @@ public class DataStore {
     public void exportOrdersCsv(Path file) throws IOException {
         SimpleDateFormat fmt = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
         List<String> lines = new ArrayList<>();
-        lines.add("﻿" + CsvUtil.line("대기번호", "학번", "이름", "주문내용", "금액", "상태", "주문시각"));
+        lines.add("﻿" + CsvUtil.line("주문번호", "대기번호(당일)", "학번", "이름", "주문내용", "금액", "상태", "주문시각"));
         for (Order o : ordersSnapshot()) {
-            lines.add(CsvUtil.line(String.valueOf(o.no), o.memberId, o.memberName, o.summary(),
+            lines.add(CsvUtil.line(String.valueOf(o.no), String.valueOf(o.dailyNo), o.memberId, o.memberName, o.summary(),
                     String.valueOf(o.total()), o.status.label, fmt.format(new Date(o.time))));
         }
         Files.write(file, lines, StandardCharsets.UTF_8);
@@ -342,7 +358,7 @@ public class DataStore {
                     int no = rs.getInt("order_no");
                     Order o = map.get(no);
                     if (o == null) {
-                        o = new Order(no, rs.getString("member_id"), rs.getString("member_name"),
+                        o = new Order(no, rs.getInt("daily_no"), rs.getString("member_id"), rs.getString("member_name"),
                                 new ArrayList<>(), Status.fromName(rs.getString("status")),
                                 rs.getTimestamp("order_time").getTime());
                         map.put(no, o);
@@ -405,13 +421,16 @@ public class DataStore {
                         ps.executeBatch();
                     }
                     long now = System.currentTimeMillis();
+                    Timestamp nowTs = new Timestamp(now);
+                    int dailyNo = nextDailyNo(c, nowTs);
                     int no;
                     try (PreparedStatement ps = c.prepareStatement(
-                            "INSERT INTO orders (member_id, member_name, status, order_time) VALUES (?, ?, 'WAITING', ?)",
+                            "INSERT INTO orders (daily_no, member_id, member_name, status, order_time) VALUES (?, ?, ?, 'WAITING', ?)",
                             Statement.RETURN_GENERATED_KEYS)) {
-                        ps.setString(1, m.id);
-                        ps.setString(2, m.name);
-                        ps.setTimestamp(3, new Timestamp(now));
+                        ps.setInt(1, dailyNo);
+                        ps.setString(2, m.id);
+                        ps.setString(3, m.name);
+                        ps.setTimestamp(4, nowTs);
                         ps.executeUpdate();
                         try (ResultSet keys = ps.getGeneratedKeys()) {
                             keys.next();
@@ -434,21 +453,41 @@ public class DataStore {
                         ps.executeBatch();
                     }
                     c.commit();
-                    created = new Order(no, m.id, m.name, clean, Status.WAITING, now);
+                    created = new Order(no, dailyNo, m.id, m.name, clean, Status.WAITING, now);
                 } catch (OrderException | SQLException | RuntimeException e) {
                     c.rollback();
                     throw e;
                 }
             } catch (SQLException e) {
                 log.accept("[DB 오류] 주문 저장 실패: " + e.getMessage());
+                if (e.getErrorCode() == MYSQL_CHECK_VIOLATED) {
+                    // DB 의 CHECK 제약(재고 0 이상, 수량 1 이상 등)이 잘못된 주문을 막은 경우
+                    throw new OrderException("주문 내용이 올바르지 않습니다. 메뉴를 새로고침한 뒤 다시 시도해 주세요.");
+                }
                 throw new OrderException(DB_ERROR);
             }
         }
-        log.accept("새 주문 #" + created.no + " " + m.name + " : " + created.summary());
+        log.accept("새 주문 #" + created.no + " (대기번호 " + created.dailyNo + "번) " + m.name + " : " + created.summary());
         listeners.forEach(Listener::menuChanged);
         Order snap = created.copy();
         listeners.forEach(l -> l.orderChanged(snap));
         return snap;
+    }
+
+    /**
+     * 주문 시각이 속한 날의 다음 대기번호 (그날 첫 주문이면 1).
+     * 같은 날 주문 행을 잠가서(FOR UPDATE) 동시에 주문이 들어와도 번호가 겹치지 않게 한다.
+     * (uq_orders_daily 유니크 키가 한 번 더 막아 준다)
+     */
+    private static int nextDailyNo(Connection c, Timestamp orderTime) throws SQLException {
+        try (PreparedStatement ps = c.prepareStatement(
+                "SELECT COALESCE(MAX(daily_no), 0) + 1 FROM orders WHERE order_date = DATE(?) FOR UPDATE")) {
+            ps.setTimestamp(1, orderTime);
+            try (ResultSet rs = ps.executeQuery()) {
+                rs.next();
+                return rs.getInt(1);
+            }
+        }
     }
 
     /** 메뉴 행을 잠그고(FOR UPDATE) 읽는다. 없으면 null. */

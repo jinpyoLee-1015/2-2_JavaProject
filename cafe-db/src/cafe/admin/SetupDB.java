@@ -1,5 +1,8 @@
 package cafe.admin;
 
+import cafe.common.Protocol;
+import cafe.common.Status;
+
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.sql.Statement;
@@ -29,18 +32,24 @@ public class SetupDB {
                     + " price INT NOT NULL,"
                     + " stock INT NOT NULL DEFAULT 0,"
                     + " manual_sold_out BOOLEAN NOT NULL DEFAULT FALSE,"
-                    + " PRIMARY KEY (id))",
+                    + " PRIMARY KEY (id),"
+                    + " CONSTRAINT chk_menu_price CHECK (price >= 0),"
+                    + " CONSTRAINT chk_menu_stock CHECK (stock >= 0))",
 
             "CREATE TABLE IF NOT EXISTS cafe.orders ("
                     + " order_no INT NOT NULL AUTO_INCREMENT,"
+                    + " daily_no INT NOT NULL,"
                     + " member_id VARCHAR(15) NOT NULL,"
                     + " member_name VARCHAR(20) NOT NULL,"
-                    + " status VARCHAR(10) NOT NULL DEFAULT 'WAITING',"
+                    + " status ENUM(" + Status.sqlList() + ") NOT NULL DEFAULT 'WAITING',"
                     + " order_time DATETIME(3) NOT NULL,"
+                    + " order_date DATE AS (DATE(order_time)) STORED,"
                     + " PRIMARY KEY (order_no),"
+                    + " UNIQUE KEY uq_orders_daily (order_date, daily_no),"
                     + " KEY idx_orders_member (member_id),"
                     + " KEY idx_orders_status (status),"
-                    + " KEY idx_orders_time (order_time))",
+                    + " KEY idx_orders_time (order_time),"
+                    + " CONSTRAINT chk_orders_daily_no CHECK (daily_no >= 1))",
 
             "CREATE TABLE IF NOT EXISTS cafe.order_items ("
                     + " id INT NOT NULL AUTO_INCREMENT,"
@@ -53,6 +62,10 @@ public class SetupDB {
                     + " unit_price INT NOT NULL,"
                     + " PRIMARY KEY (id),"
                     + " KEY idx_items_menu (menu_id),"
+                    + " CONSTRAINT chk_items_qty CHECK (qty >= 1),"
+                    + " CONSTRAINT chk_items_shots CHECK (shots >= 0),"
+                    + " CONSTRAINT chk_items_unit_price CHECK (unit_price >= 0),"
+                    + " CONSTRAINT chk_items_size CHECK (opt_size IN ('" + Protocol.SIZE_BASIC + "','" + Protocol.SIZE_LARGE + "')),"
                     + " CONSTRAINT fk_items_order FOREIGN KEY (order_no) REFERENCES cafe.orders (order_no) ON DELETE CASCADE)"
     };
 

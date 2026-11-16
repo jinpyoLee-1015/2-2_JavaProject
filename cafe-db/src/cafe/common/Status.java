@@ -17,6 +17,16 @@ public enum Status {
 
     public boolean isFinished() { return this == DONE || this == CANCELED; }
 
+    /** DB ENUM 정의용 목록: 'WAITING','MAKING',... (상태를 추가하면 DB 에도 자동으로 반영된다) */
+    public static String sqlList() {
+        StringBuilder sb = new StringBuilder();
+        for (Status s : values()) {
+            if (sb.length() > 0) sb.append(',');
+            sb.append('\'').append(s.name()).append('\'');
+        }
+        return sb.toString();
+    }
+
     public static Status fromName(String s) {
         try { return valueOf(s); } catch (Exception e) { return WAITING; }
     }
