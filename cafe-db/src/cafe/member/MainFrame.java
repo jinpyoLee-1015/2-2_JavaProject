@@ -44,7 +44,7 @@ public class MainFrame extends JFrame implements ServerConnection.PushListener {
     private final JLabel totalLabel = new JLabel("합계 0원");
 
     // 내 주문 탭
-    private final DefaultTableModel orderModel = readOnly("대기번호", "주문 내용", "금액", "상태", "내 앞 대기", "주문 시각");
+    private final DefaultTableModel orderModel = readOnly("대기번호", "주문 내용", "금액", "상태", "내 앞 대기", "주문 시각", "예상 수령");
     private final JTable orderTable = new JTable(orderModel);
     private final SimpleDateFormat timeFmt = new SimpleDateFormat("MM-dd HH:mm");
 
@@ -167,7 +167,7 @@ public class MainFrame extends JFrame implements ServerConnection.PushListener {
         orderTable.setRowHeight(28);
         orderTable.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
         orderTable.getTableHeader().setReorderingAllowed(false);
-        int[] w = { 70, 330, 80, 90, 80, 100 };
+        int[] w = { 70, 300, 80, 90, 80, 100, 80 };
         for (int i = 0; i < w.length; i++) orderTable.getColumnModel().getColumn(i).setPreferredWidth(w[i]);
         orderTable.getColumnModel().getColumn(3).setCellRenderer(new DefaultTableCellRenderer() {
             @Override public Component getTableCellRendererComponent(JTable t, Object v, boolean sel, boolean foc, int r, int c) {
@@ -329,12 +329,19 @@ public class MainFrame extends JFrame implements ServerConnection.PushListener {
                 int ahead = Integer.parseInt(f[7]);
                 myOrders.add(o);
                 rows.add(0, new Object[] { o.no, o.summary(), UiUtil.won(o.total()), o.status.label,
-                        o.status.isQueued() ? ahead + "팀" : "-", timeFmt.format(new Date(o.time)) });
+                        o.status.isQueued() ? ahead + "팀" : "-", timeFmt.format(new Date(o.time)),
+                        o.status.isQueued() ? expectedTime(ahead) : "-" });
             }
             // 최근 주문이 위로 오도록 표시 (myOrders 도 같은 순서로 맞춘다)
             java.util.Collections.reverse(myOrders);
             for (Object[] row : rows) orderModel.addRow(row);
         }, this::onError);
+    }
+
+    /** 예상 수령 시각: 지금 + (내 앞 대기 팀 수 + 1) x 주문 1건당 제조 시간 */
+    private String expectedTime(int ahead) {
+        long ms = System.currentTimeMillis() + (long) (ahead + 1) * Protocol.MINUTES_PER_ORDER * 60_000L;
+        return new SimpleDateFormat("HH:mm").format(new Date(ms));
     }
 
     private void refreshQueue() {
