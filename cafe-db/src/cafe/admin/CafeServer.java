@@ -70,6 +70,16 @@ public class CafeServer {
         return c;
     }
 
+    /** 같은 학번이 이미 로그인 중인지 확인 (중복 로그인 방지) */
+    private boolean isLoggedIn(String id, ClientHandler self) {
+        for (ClientHandler h : clients) {
+            if (h == self) continue;   // 자기 자신(같은 창에서 다시 로그인)은 제외
+            Member u = h.user;
+            if (u != null && u.id.equals(id)) return true;
+        }
+        return false;
+    }
+
     private void acceptLoop() {
         while (running) {
             try {
@@ -168,7 +178,15 @@ public class CafeServer {
                 case "LOGIN": {
                     Member m = store.login(f[1], f[2]);
                     if (m == null) { err("학번 또는 비밀번호가 올바르지 않습니다."); return; }
-                    user = m;
+                    synchronized (CafeServer.this) {
+                        // 같은 학번이 이미 접속 중이면 두 번째 로그인은 거절한다
+                        if (isLoggedIn(m.id, this)) {
+                            err("이미 다른 곳에서 로그인 중인 계정입니다.");
+                            log.accept("[차단] 중복 로그인 시도: " + m.name + " (" + m.id + ")");
+                            return;
+                        }
+                        user = m;
+                    }
                     log.accept("로그인: " + m.name + " (" + m.id + ")");
                     onClientsChanged.run();
                     ok(m.name);
