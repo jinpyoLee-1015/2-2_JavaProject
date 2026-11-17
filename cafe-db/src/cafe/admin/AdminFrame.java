@@ -6,6 +6,9 @@ import cafe.common.MenuItem;
 import javax.swing.*;
 import javax.swing.table.DefaultTableCellRenderer;
 import javax.swing.table.DefaultTableModel;
+import javax.sound.sampled.AudioFormat;
+import javax.sound.sampled.AudioSystem;
+import javax.sound.sampled.SourceDataLine;
 import java.awt.*;
 import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
@@ -30,6 +33,8 @@ public class AdminFrame extends JFrame {
     private final DefaultTableModel orderModel = readOnlyModel("대기번호", "회원", "주문 내용", "금액", "상태", "주문 시각");
     private final JTable orderTable = new JTable(orderModel);
     private final JCheckBox showFinished = new JCheckBox("수령 완료/취소 주문도 표시");
+    private final JCheckBox orderSoundEnabled = new JCheckBox("새 주문 알림음", true);
+    private final Set<Integer> knownOrderNumbers = new HashSet<>();
 
     private final DefaultTableModel menuModel = readOnlyModel("ID", "카테고리", "메뉴", "가격", "재고", "상태");
     private final JTable menuTable = new JTable(menuModel);
@@ -46,12 +51,19 @@ public class AdminFrame extends JFrame {
         this.store = store;
         this.server = new CafeServer(store);
 
+        for (Order order : store.ordersSnapshot()) knownOrderNumbers.add(order.no);
+
         server.setLog(this::appendLog);
         store.setLog(this::appendLog);
         server.setOnClientsChanged(() -> SwingUtilities.invokeLater(this::updateClientLabel));
         store.addListener(new DataStore.Listener() {
             @Override public void menuChanged() { SwingUtilities.invokeLater(AdminFrame.this::refreshMenu); }
-            @Override public void orderChanged(Order o) { SwingUtilities.invokeLater(AdminFrame.this::refreshOrders); }
+            @Override public void orderChanged(Order o) {
+                SwingUtilities.invokeLater(() -> {
+                    refreshOrders();
+                    notifyNewOrder(o);
+                });
+            }
             @Override public void membersChanged() { SwingUtilities.invokeLater(AdminFrame.this::refreshMembers); }
         });
 
@@ -183,12 +195,73 @@ public class AdminFrame extends JFrame {
         buttons.add(cancel);
         buttons.add(Box.createHorizontalStrut(16));
         buttons.add(showFinished);
+        buttons.add(orderSoundEnabled);
         buttons.add(export);
 
         JPanel p = new JPanel(new BorderLayout());
         p.add(buttons, BorderLayout.NORTH);
         p.add(new JScrollPane(orderTable), BorderLayout.CENTER);
         return p;
+    }
+
+    private void notifyNewOrder(Order order) {
+        if (order.status != Status.WAITING || !knownOrderNumbers.add(order.no)) return;
+        appendLog("새 주문 접수 #" + order.no + " - " + order.memberName);
+        if (orderSoundEnabled.isSelected()) playOrderBell();
+    }
+
+    // WAV 파일 없이 코드로 부드러운 2음 카페 주문벨 생성
+    private void playOrderBell() {
+        Thread audioThread = new Thread(() -> {
+            SourceDataLine line = null;
+            try {
+                final int sampleRate = 44100;
+                AudioFormat format = new AudioFormat(sampleRate, 16, 1, true, false);
+                line = AudioSystem.getSourceDataLine(format);
+                line.open(format);
+                line.start();
+
+                double duration = 1.25;
+                int samples = (int) (duration * sampleRate);
+                byte[] pcm = new byte[samples * 2];
+                double[] noteStarts = {0.0, 0.34};
+                double[] fundamentals = {880.0, 659.25};
+
+                for (int i = 0; i < samples; i++) {
+                    double t = i / (double) sampleRate;
+                    double sum = 0.0;
+                    for (int n = 0; n < noteStarts.length; n++) {
+                        double elapsed = t - noteStarts[n];
+                        if (elapsed < 0) continue;
+                        double attack = Math.min(1.0, elapsed / 0.015);
+                        double fade = Math.exp(-4.7 * elapsed);
+                        double f = fundamentals[n];
+                        double fundamental = Math.sin(2 * Math.PI * f * elapsed);
+                        double overtone = 0.22 * Math.sin(2 * Math.PI * f * 2 * elapsed);
+                        double sparkle = 0.08 * Math.sin(2 * Math.PI * f * 3 * elapsed);
+                        sum += attack * fade * (fundamental + overtone + sparkle);
+                    }
+                    sum = Math.max(-1.0, Math.min(1.0, sum * 0.44));
+                    short value = (short) (sum * 32767);
+                    pcm[2 * i] = (byte) (value & 0xff);
+                    pcm[2 * i + 1] = (byte) ((value >>> 8) & 0xff);
+                }
+                int offset = 0;
+                while (offset < pcm.length) {
+                    offset += line.write(pcm, offset, pcm.length - offset);
+                }
+                line.drain();
+            } catch (Exception ex) {
+                appendLog("주문벨 재생 실패: " + ex.getMessage());
+            } finally {
+                if (line != null) {
+                    line.stop();
+                    line.close();
+                }
+            }
+        }, "cafe-order-bell");
+        audioThread.setDaemon(true);
+        audioThread.start();
     }
 
     private int selectedOrderNo() {
