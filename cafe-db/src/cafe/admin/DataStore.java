@@ -9,6 +9,8 @@ import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.sql.*;
 import java.text.SimpleDateFormat;
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.Date;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -105,8 +107,8 @@ public class DataStore {
         List<String> lines = new ArrayList<>();
         lines.add("﻿" + CsvUtil.line("주문번호", "대기번호(당일)", "학번", "이름", "주문내용", "금액", "상태", "주문시각"));
         for (Order o : ordersSnapshot()) {
-            lines.add(CsvUtil.line(String.valueOf(o.no), String.valueOf(o.dailyNo), o.memberId, o.memberName, o.summary(),
-                    String.valueOf(o.total()), o.status.label, fmt.format(new Date(o.time))));
+            lines.add(CsvUtil.line(String.valueOf(o.no), String.valueOf(o.dailyNo), CsvUtil.text(o.memberId), o.memberName, o.summary(),
+                    String.valueOf(o.total()), o.status.label, CsvUtil.text(fmt.format(new Date(o.time)))));
         }
         Files.write(file, lines, StandardCharsets.UTF_8);
     }
@@ -653,5 +655,82 @@ public class DataStore {
             dbError(e);
             return 0;
         }
+    }
+
+    // ---------------------------------------------------------------- 매출 통계
+
+    /** 주문이 하나라도 있는 날짜 목록 (최근 날짜가 먼저) */
+    public List<LocalDate> orderDates() {
+        List<LocalDate> list = new ArrayList<>();
+        try (Connection c = DBConnect.get();
+             Statement st = c.createStatement();
+             ResultSet rs = st.executeQuery("SELECT DISTINCT order_date FROM orders ORDER BY order_date DESC")) {
+            while (rs.next()) list.add(rs.getDate(1).toLocalDate());
+        } catch (SQLException e) {
+            dbError(e);
+        }
+        return list;
+    }
+
+    /**
+     * 하루치 매출 통계. 취소된 주문은 매출에서 빼고 건수만 따로 센다.
+     * 메뉴는 주문 당시 이름(menu_name)으로 묶으므로, 메뉴를 삭제하거나 가격을 바꿔도 지난 통계는 그대로다.
+     */
+    public SalesReport salesReport(LocalDate date) {
+        java.sql.Date day = java.sql.Date.valueOf(date);
+        List<SalesReport.MenuLine> lines = new ArrayList<>();
+        List<Order> orders = new ArrayList<>();
+        int canceled = 0;
+        try (Connection c = DBConnect.get()) {
+            try (PreparedStatement ps = c.prepareStatement(
+                    "SELECT i.menu_name, SUM(i.qty) AS qty, SUM(i.qty * i.unit_price) AS amount "
+                            + "FROM orders o JOIN order_items i ON i.order_no = o.order_no "
+                            + "WHERE o.order_date = ? AND o.status <> 'CANCELED' "
+                            + "GROUP BY i.menu_name ORDER BY qty DESC, amount DESC, i.menu_name")) {
+                ps.setDate(1, day);
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        lines.add(new SalesReport.MenuLine(rs.getString("menu_name"), rs.getInt("qty"), rs.getInt("amount")));
+                    }
+                }
+            }
+            orders = queryOrders(c, "o.order_date = ? AND o.status <> 'CANCELED'", day);
+            try (PreparedStatement ps = c.prepareStatement(
+                    "SELECT COUNT(*) FROM orders WHERE order_date = ? AND status = 'CANCELED'")) {
+                ps.setDate(1, day);
+                try (ResultSet rs = ps.executeQuery()) {
+                    rs.next();
+                    canceled = rs.getInt(1);
+                }
+            }
+        } catch (SQLException e) {
+            dbError(e);
+        }
+        return new SalesReport(date, lines, orders, canceled);
+    }
+
+    /** 하루치 매출 통계를 엑셀용 CSV 로 저장 (요약 / 메뉴별 판매 / 주문 목록, BOM 포함) */
+    public void exportSalesCsv(LocalDate date, Path file) throws IOException {
+        SalesReport r = salesReport(date);
+        SimpleDateFormat timeFmt = new SimpleDateFormat("MM월 dd일 HH시 mm분");
+        List<String> lines = new ArrayList<>();
+        lines.add("\uFEFF" + CsvUtil.line("매출 통계", CsvUtil.text(date.format(DateTimeFormatter.ofPattern("yyyy년 MM월 dd일")))));
+        lines.add(CsvUtil.line("총 매출", String.valueOf(r.totalAmount())));
+        lines.add(CsvUtil.line("판매 수량(잔)", String.valueOf(r.totalQty())));
+        lines.add(CsvUtil.line("주문 건수", String.valueOf(r.orderCount())));
+        lines.add(CsvUtil.line("취소 건수", String.valueOf(r.canceledCount)));
+        lines.add("");
+        lines.add(CsvUtil.line("메뉴", "판매 수량(잔)", "매출"));
+        for (SalesReport.MenuLine m : r.menuLines) {
+            lines.add(CsvUtil.line(m.menuName, String.valueOf(m.qty), String.valueOf(m.amount)));
+        }
+        lines.add("");
+        lines.add(CsvUtil.line("대기번호", "주문 시각", "학번", "이름", "주문 내용", "금액", "상태"));
+        for (Order o : r.orders) {
+            lines.add(CsvUtil.line(String.valueOf(o.displayNo()), CsvUtil.text(timeFmt.format(new Date(o.time))), CsvUtil.text(o.memberId),
+                    o.memberName, o.summary(), String.valueOf(o.total()), o.status.label));
+        }
+        Files.write(file, lines, StandardCharsets.UTF_8);
+        log.accept("매출 통계 CSV 저장: " + date + " → " + file.getFileName());
     }
 }

@@ -16,6 +16,8 @@ import java.io.File;
 import java.net.*;
 import java.nio.file.Path;
 import java.text.SimpleDateFormat;
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.List;
 
@@ -42,6 +44,15 @@ public class AdminFrame extends JFrame {
     private final DefaultTableModel memberModel = readOnlyModel("학번", "이름", "이메일");
     private final JLabel memberCount = new JLabel(" ");
 
+    // 매출 통계 탭
+    private static final DateTimeFormatter STATS_DATE_FMT = DateTimeFormatter.ofPattern("yyyy년 MM월 dd일 (E)", Locale.KOREAN);
+    private final JComboBox<LocalDate> statsDateBox = new JComboBox<>();
+    private final JLabel statsSummary = new JLabel(" ");
+    private final DefaultTableModel statsMenuModel = readOnlyModel("메뉴", "판매 수량", "매출");
+    private final DefaultTableModel statsOrderModel = readOnlyModel("대기번호", "주문 시각", "회원", "주문 내용", "금액", "상태");
+    private final SimpleDateFormat statsTimeFmt = new SimpleDateFormat("MM월 dd일 HH시 mm분");
+    private boolean updatingStatsDates;
+
     private final JTextArea logArea = new JTextArea();
     private final SimpleDateFormat timeFmt = new SimpleDateFormat("MM-dd HH:mm");
     private final SimpleDateFormat logFmt = new SimpleDateFormat("HH:mm:ss");
@@ -62,6 +73,7 @@ public class AdminFrame extends JFrame {
                 SwingUtilities.invokeLater(() -> {
                     refreshOrders();
                     notifyNewOrder(o);
+                    refreshStatsIfToday();
                 });
             }
             @Override public void membersChanged() { SwingUtilities.invokeLater(AdminFrame.this::refreshMembers); }
@@ -79,12 +91,14 @@ public class AdminFrame extends JFrame {
         tabs.addTab("주문 관리", buildOrderTab());
         tabs.addTab("메뉴 · 재고", buildMenuTab());
         tabs.addTab("회원", buildMemberTab());
+        tabs.addTab("매출 통계", buildStatsTab());
         tabs.addTab("서버 로그", buildLogTab());
         add(tabs, BorderLayout.CENTER);
 
         refreshOrders();
         refreshMenu();
         refreshMembers();
+        refreshStats();
         appendLog("데이터베이스: " + store.getDbInfo());
 
         setSize(1000, 640);
@@ -460,6 +474,127 @@ public class AdminFrame extends JFrame {
             for (int i = 0; i < menuModel.getRowCount(); i++) {
                 if ((Integer) menuModel.getValueAt(i, 0) == keepId) { menuTable.setRowSelectionInterval(i, i); break; }
             }
+        }
+    }
+
+    // ---------------------------------------------------------------- 매출 통계 탭
+    // 날짜를 고르면 그날의 메뉴별 판매 수량·매출과 주문 목록(주문 시각 포함)을 보여 주고, CSV 로 내보낼 수 있다.
+
+    private JComponent buildStatsTab() {
+        statsDateBox.setRenderer(new DefaultListCellRenderer() {
+            @Override public Component getListCellRendererComponent(JList<?> list, Object value, int index,
+                                                                    boolean sel, boolean focus) {
+                super.getListCellRendererComponent(list, value, index, sel, focus);
+                if (value instanceof LocalDate) {
+                    LocalDate d = (LocalDate) value;
+                    setText(d.format(STATS_DATE_FMT) + (d.equals(LocalDate.now()) ? "  - 오늘" : ""));
+                }
+                return this;
+            }
+        });
+        statsDateBox.addActionListener(e -> { if (!updatingStatsDates) showStats(); });
+
+        JButton refresh = new JButton("새로고침");
+        JButton export = new JButton("매출 통계 CSV 저장");
+        refresh.addActionListener(e -> refreshStats());
+        export.addActionListener(e -> exportStatsCsv());
+
+        JPanel top = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 8));
+        top.add(new JLabel("날짜"));
+        top.add(statsDateBox);
+        top.add(refresh);
+        top.add(export);
+
+        statsSummary.setFont(statsSummary.getFont().deriveFont(Font.BOLD, statsSummary.getFont().getSize2D() + 1f));
+        statsSummary.setBorder(BorderFactory.createEmptyBorder(0, 12, 8, 12));
+        JPanel north = new JPanel(new BorderLayout());
+        north.add(top, BorderLayout.NORTH);
+        north.add(statsSummary, BorderLayout.SOUTH);
+
+        JTable menuTable = new JTable(statsMenuModel);
+        JTable orderTable = new JTable(statsOrderModel);
+        int[][] widths = { { 260, 100, 120 }, { 70, 150, 140, 380, 90, 80 } };
+        JTable[] tables = { menuTable, orderTable };
+        for (int t = 0; t < tables.length; t++) {
+            tables[t].setRowHeight(26);
+            tables[t].getTableHeader().setReorderingAllowed(false);
+            for (int i = 0; i < widths[t].length; i++) tables[t].getColumnModel().getColumn(i).setPreferredWidth(widths[t][i]);
+        }
+        DefaultTableCellRenderer right = new DefaultTableCellRenderer();
+        right.setHorizontalAlignment(SwingConstants.RIGHT);
+        menuTable.getColumnModel().getColumn(1).setCellRenderer(right);
+        menuTable.getColumnModel().getColumn(2).setCellRenderer(right);
+        orderTable.getColumnModel().getColumn(4).setCellRenderer(right);
+
+        JScrollPane menuScroll = new JScrollPane(menuTable);
+        JScrollPane orderScroll = new JScrollPane(orderTable);
+        menuScroll.setBorder(BorderFactory.createTitledBorder("메뉴별 판매"));
+        orderScroll.setBorder(BorderFactory.createTitledBorder("주문 목록 (취소 제외)"));
+        JSplitPane split = new JSplitPane(JSplitPane.VERTICAL_SPLIT, menuScroll, orderScroll);
+        split.setResizeWeight(0.4);
+        split.setBorder(BorderFactory.createEmptyBorder(0, 8, 8, 8));
+
+        JPanel p = new JPanel(new BorderLayout());
+        p.add(north, BorderLayout.NORTH);
+        p.add(split, BorderLayout.CENTER);
+        return p;
+    }
+
+    /** 날짜 목록을 다시 읽고(오늘은 주문이 없어도 포함), 고르고 있던 날짜의 통계를 다시 보여 준다. */
+    private void refreshStats() {
+        LocalDate keep = (LocalDate) statsDateBox.getSelectedItem();
+        LocalDate today = LocalDate.now();
+        List<LocalDate> dates = new ArrayList<>(store.orderDates());
+        if (!dates.contains(today)) dates.add(0, today);
+
+        updatingStatsDates = true;
+        statsDateBox.removeAllItems();
+        for (LocalDate d : dates) statsDateBox.addItem(d);
+        statsDateBox.setSelectedItem(keep != null && dates.contains(keep) ? keep : today);
+        updatingStatsDates = false;
+        showStats();
+    }
+
+    /** 오늘 통계를 보고 있을 때만 새로고침 (새 주문·취소가 생겼을 때 호출) */
+    private void refreshStatsIfToday() {
+        LocalDate sel = (LocalDate) statsDateBox.getSelectedItem();
+        if (sel == null || sel.equals(LocalDate.now())) refreshStats();
+    }
+
+    private void showStats() {
+        LocalDate date = (LocalDate) statsDateBox.getSelectedItem();
+        if (date == null) return;
+        SalesReport r = store.salesReport(date);
+
+        statsSummary.setText(date.format(STATS_DATE_FMT) + "   총 매출 " + UiUtil.won(r.totalAmount())
+                + "   ·   판매 " + r.totalQty() + "잔   ·   주문 " + r.orderCount() + "건"
+                + (r.canceledCount > 0 ? "   ·   취소 " + r.canceledCount + "건" : ""));
+
+        statsMenuModel.setRowCount(0);
+        for (SalesReport.MenuLine m : r.menuLines) {
+            statsMenuModel.addRow(new Object[] { m.menuName, m.qty + "잔", UiUtil.won(m.amount) });
+        }
+        if (r.menuLines.isEmpty()) statsMenuModel.addRow(new Object[] { "(판매 내역 없음)", "", "" });
+
+        statsOrderModel.setRowCount(0);
+        for (Order o : r.orders) {
+            statsOrderModel.addRow(new Object[] { o.displayNo(), statsTimeFmt.format(new Date(o.time)),
+                    o.memberName + " (" + o.memberId + ")", o.summary(), UiUtil.won(o.total()), o.status.label });
+        }
+    }
+
+    private void exportStatsCsv() {
+        LocalDate date = (LocalDate) statsDateBox.getSelectedItem();
+        if (date == null) return;
+        JFileChooser fc = new JFileChooser();
+        fc.setSelectedFile(new File("매출통계_" + date.format(DateTimeFormatter.ofPattern("yyyyMMdd")) + ".csv"));
+        if (fc.showSaveDialog(this) != JFileChooser.APPROVE_OPTION) return;
+        Path p = fc.getSelectedFile().toPath();
+        try {
+            store.exportSalesCsv(date, p);
+            JOptionPane.showMessageDialog(this, "저장했습니다.\n" + p);
+        } catch (Exception e) {
+            JOptionPane.showMessageDialog(this, "저장 실패: " + e.getMessage(), "오류", JOptionPane.ERROR_MESSAGE);
         }
     }
 

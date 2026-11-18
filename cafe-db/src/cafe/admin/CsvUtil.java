@@ -21,6 +21,14 @@ final class CsvUtil {
         return sb.toString();
     }
 
+    /**
+     * 엑셀·한셀이 숫자나 날짜로 바꾸지 않고 글자 그대로 보여 주도록 감싼다. (="값" 형태)
+     * 예) 학번 2023123456 이 2.023E+09 로, 날짜가 ####### 로 보이는 문제를 막는다.
+     */
+    static String text(String s) {
+        return "=\"" + (s == null ? "" : s.replace("\"", "\"\"")) + "\"";
+    }
+
     static String[] parse(String line) {
         List<String> out = new ArrayList<>();
         StringBuilder cur = new StringBuilder();

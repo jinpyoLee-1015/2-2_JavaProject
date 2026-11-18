@@ -27,6 +27,10 @@ public class MainFrame extends JFrame implements ServerConnection.PushListener {
     private boolean leaving;
 
     private final JLabel queueLabel = new JLabel("현재 대기 - ");
+    // 오늘 날짜와 현재 시각 (1초마다 갱신, 분 단위까지 표시)
+    private final JLabel clockLabel = new JLabel(" ");
+    private final SimpleDateFormat clockFmt = new SimpleDateFormat("yyyy년 MM월 dd일 (E)  HH:mm", java.util.Locale.KOREAN);
+    private final Timer clockTimer = new Timer(1000, e -> updateClock());
     private final JTabbedPane tabs = new JTabbedPane();
 
     // 메뉴 탭
@@ -86,6 +90,11 @@ public class MainFrame extends JFrame implements ServerConnection.PushListener {
         logout.addActionListener(e -> leave(false));
         withdraw.addActionListener(e -> doWithdraw());
         JPanel right = new JPanel(new FlowLayout(FlowLayout.RIGHT, 6, 0));
+        clockLabel.setFont(clockLabel.getFont().deriveFont(Font.BOLD));
+        clockLabel.setBorder(BorderFactory.createEmptyBorder(0, 0, 0, 10));
+        updateClock();
+        clockTimer.start();
+        right.add(clockLabel);
         right.add(logout);
         right.add(withdraw);
         h.add(hello, BorderLayout.WEST);
@@ -95,6 +104,13 @@ public class MainFrame extends JFrame implements ServerConnection.PushListener {
         h.setBorder(BorderFactory.createCompoundBorder(
                 BorderFactory.createMatteBorder(0, 0, 1, 0, Color.LIGHT_GRAY), h.getBorder()));
         return h;
+    }
+
+    private void updateClock() { clockLabel.setText(clockFmt.format(new Date())); }
+
+    @Override public void dispose() {
+        clockTimer.stop();
+        super.dispose();
     }
 
     private JComponent buildMenuTab() {
