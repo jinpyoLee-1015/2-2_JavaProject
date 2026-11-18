@@ -15,6 +15,7 @@ public class LoginFrame extends JFrame {
     private final JTextField portField = new JTextField(PREFS.get("port", String.valueOf(Protocol.DEFAULT_PORT)), 5);
     private final JTextField idField = new JTextField(PREFS.get("id", ""), 14);
     private final JPasswordField pwField = new JPasswordField(14);
+    private final JCheckBox showPw = new JCheckBox("비밀번호 보기");
     private final JButton loginBtn = new JButton("로그인");
     private final JButton signupBtn = new JButton("회원가입");
     private final JLabel status = new JLabel(" ");
@@ -40,9 +41,11 @@ public class LoginFrame extends JFrame {
         addRow(form, g, 0, "서버 주소", server);
         addRow(form, g, 1, "학번", idField);
         addRow(form, g, 2, "비밀번호", pwField);
+        g.gridx = 1; g.gridy = 3;
+        form.add(showPw, g);
 
         JLabel hint = new JLabel("<html><font color='gray'>서버 주소는 관리자 프로그램 상단에 표시된 IP를 입력하세요.</font></html>");
-        g.gridx = 0; g.gridy = 3; g.gridwidth = 2;
+        g.gridx = 0; g.gridy = 4; g.gridwidth = 2;
         form.add(hint, g);
 
         JPanel buttons = new JPanel(new FlowLayout(FlowLayout.CENTER, 10, 6));
@@ -63,6 +66,8 @@ public class LoginFrame extends JFrame {
         loginBtn.addActionListener(e -> doLogin());
         pwField.addActionListener(e -> doLogin());
         signupBtn.addActionListener(e -> doSignup());
+        char echo = pwField.getEchoChar();      // 원래 가림 문자 (●, * 등)
+        showPw.addActionListener(e -> pwField.setEchoChar(showPw.isSelected() ? (char) 0 : echo));
         getRootPane().setDefaultButton(loginBtn);
 
         pack();
@@ -154,6 +159,14 @@ public class LoginFrame extends JFrame {
         p.add(new JLabel("이메일")); p.add(email);
         p.add(new JLabel("비밀번호 (4자 이상)")); p.add(pw);
         p.add(new JLabel("비밀번호 확인")); p.add(pw2);
+        JCheckBox show = new JCheckBox("비밀번호 표시");
+        char echo = pw.getEchoChar();
+        show.addActionListener(e -> {
+            char c = show.isSelected() ? (char) 0 : echo;
+            pw.setEchoChar(c);
+            pw2.setEchoChar(c);
+        });
+        p.add(new JLabel("")); p.add(show);
 
         if (JOptionPane.showConfirmDialog(this, p, "회원가입", JOptionPane.OK_CANCEL_OPTION,
                 JOptionPane.PLAIN_MESSAGE) != JOptionPane.OK_OPTION) return;
