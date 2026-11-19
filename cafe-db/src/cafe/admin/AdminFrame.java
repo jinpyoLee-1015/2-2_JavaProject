@@ -1,11 +1,10 @@
 package cafe.admin;
-
 import cafe.common.*;
 import cafe.common.MenuItem;
-
 import javax.swing.*;
 import javax.swing.table.DefaultTableCellRenderer;
 import javax.swing.table.DefaultTableModel;
+import javax.swing.table.TableRowSorter;
 import javax.sound.sampled.AudioFormat;
 import javax.sound.sampled.AudioSystem;
 import javax.sound.sampled.SourceDataLine;
@@ -20,30 +19,26 @@ import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.List;
-
 /** 관리자 화면: 서버 시작/중지, 주문 처리, 메뉴·재고 관리, 회원 목록, 로그 */
 public class AdminFrame extends JFrame {
     private final DataStore store;
     private final CafeServer server;
-
     private final JTextField portField = new JTextField(String.valueOf(Protocol.DEFAULT_PORT), 5);
     private final JButton serverBtn = new JButton("서버 시작");
     private final JLabel serverStatus = new JLabel("● 서버 중지됨");
     private final JLabel addressLabel = new JLabel(" ");
     private final JLabel clientLabel = new JLabel("접속자 0명");
-
     private final DefaultTableModel orderModel = readOnlyModel("대기번호", "회원", "주문 내용", "금액", "상태", "주문 시각");
     private final JTable orderTable = new JTable(orderModel);
     private final JCheckBox showFinished = new JCheckBox("수령 완료/취소 주문도 표시");
     private final JCheckBox orderSoundEnabled = new JCheckBox("새 주문 알림음", true);
     private final Set<Integer> knownOrderNumbers = new HashSet<>();
-
     private final DefaultTableModel menuModel = readOnlyModel("ID", "카테고리", "메뉴", "가격", "재고", "상태");
     private final JTable menuTable = new JTable(menuModel);
-
     private final DefaultTableModel memberModel = readOnlyModel("학번", "이름", "이메일");
     private final JLabel memberCount = new JLabel(" ");
-
+    private final JTextField memberSearchField = new JTextField(18);
+    private final TableRowSorter<DefaultTableModel> memberSorter = new TableRowSorter<>(memberModel);
     // 매출 통계 탭
     private static final DateTimeFormatter STATS_DATE_FMT = DateTimeFormatter.ofPattern("yyyy년 MM월 dd일 (E)", Locale.KOREAN);
     private final JComboBox<LocalDate> statsDateBox = new JComboBox<>();
@@ -52,18 +47,14 @@ public class AdminFrame extends JFrame {
     private final DefaultTableModel statsOrderModel = readOnlyModel("대기번호", "주문 시각", "회원", "주문 내용", "금액", "상태");
     private final SimpleDateFormat statsTimeFmt = new SimpleDateFormat("MM월 dd일 HH시 mm분");
     private boolean updatingStatsDates;
-
     private final JTextArea logArea = new JTextArea();
     private final SimpleDateFormat timeFmt = new SimpleDateFormat("MM-dd HH:mm");
     private final SimpleDateFormat logFmt = new SimpleDateFormat("HH:mm:ss");
-
     public AdminFrame(DataStore store) {
         super("카페 관리자 (서버 내장)");
         this.store = store;
         this.server = new CafeServer(store);
-
         for (Order order : store.ordersSnapshot()) knownOrderNumbers.add(order.no);
-
         server.setLog(this::appendLog);
         store.setLog(this::appendLog);
         server.setOnClientsChanged(() -> SwingUtilities.invokeLater(this::updateClientLabel));
@@ -78,15 +69,12 @@ public class AdminFrame extends JFrame {
             }
             @Override public void membersChanged() { SwingUtilities.invokeLater(AdminFrame.this::refreshMembers); }
         });
-
         setDefaultCloseOperation(DO_NOTHING_ON_CLOSE);
         addWindowListener(new WindowAdapter() {
             @Override public void windowClosing(WindowEvent e) { onClose(); }
         });
-
         setLayout(new BorderLayout(0, 0));
         add(buildTopBar(), BorderLayout.NORTH);
-
         JTabbedPane tabs = new JTabbedPane();
         tabs.addTab("주문 관리", buildOrderTab());
         tabs.addTab("메뉴 · 재고", buildMenuTab());
@@ -94,19 +82,16 @@ public class AdminFrame extends JFrame {
         tabs.addTab("매출 통계", buildStatsTab());
         tabs.addTab("서버 로그", buildLogTab());
         add(tabs, BorderLayout.CENTER);
-
         refreshOrders();
         refreshMenu();
         refreshMembers();
         refreshStats();
         appendLog("데이터베이스: " + store.getDbInfo());
-
         setSize(1000, 640);
         setLocationRelativeTo(null);
     }
 
     // ---------------------------------------------------------------- 상단 서버 바
-
     private JComponent buildTopBar() {
         JPanel bar = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 8));
         bar.setBorder(BorderFactory.createMatteBorder(0, 0, 1, 0, Color.LIGHT_GRAY));
@@ -158,7 +143,6 @@ public class AdminFrame extends JFrame {
     }
 
     private void updateClientLabel() { clientLabel.setText("  접속자 " + server.loggedInCount() + "명"); }
-
     /** 이 노트북의 사설 IPv4 주소 목록 (와이파이/핫스팟에서 회원 프로그램이 접속할 주소) */
     static List<String> localAddresses() {
         List<String> list = new ArrayList<>();
@@ -174,7 +158,6 @@ public class AdminFrame extends JFrame {
     }
 
     // ---------------------------------------------------------------- 주문 탭
-
     private JComponent buildOrderTab() {
         orderTable.setRowHeight(26);
         orderTable.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
@@ -182,7 +165,6 @@ public class AdminFrame extends JFrame {
         int[] w = { 70, 140, 380, 80, 90, 110 };
         for (int i = 0; i < w.length; i++) orderTable.getColumnModel().getColumn(i).setPreferredWidth(w[i]);
         orderTable.getColumnModel().getColumn(4).setCellRenderer(new StatusRenderer());
-
         JButton start = new JButton("제조 시작");
         JButton ready = new JButton("제조 완료 (수령 가능 알림)");
         JButton done = new JButton("수령 완료");
@@ -201,7 +183,6 @@ public class AdminFrame extends JFrame {
         });
         export.addActionListener(e -> exportCsv());
         showFinished.addActionListener(e -> refreshOrders());
-
         JPanel buttons = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 8));
         buttons.add(start);
         buttons.add(ready);
@@ -211,7 +192,6 @@ public class AdminFrame extends JFrame {
         buttons.add(showFinished);
         buttons.add(orderSoundEnabled);
         buttons.add(export);
-
         JPanel p = new JPanel(new BorderLayout());
         p.add(buttons, BorderLayout.NORTH);
         p.add(new JScrollPane(orderTable), BorderLayout.CENTER);
@@ -223,7 +203,6 @@ public class AdminFrame extends JFrame {
         appendLog("새 주문 접수 #" + order.no + " - " + order.memberName);
         if (orderSoundEnabled.isSelected()) playOrderBell();
     }
-
     // WAV 파일 없이 코드로 부드러운 2음 카페 주문벨 생성
     private void playOrderBell() {
         Thread audioThread = new Thread(() -> {
@@ -234,13 +213,11 @@ public class AdminFrame extends JFrame {
                 line = AudioSystem.getSourceDataLine(format);
                 line.open(format);
                 line.start();
-
                 double duration = 1.25;
                 int samples = (int) (duration * sampleRate);
                 byte[] pcm = new byte[samples * 2];
                 double[] noteStarts = {0.0, 0.34};
                 double[] fundamentals = {880.0, 659.25};
-
                 for (int i = 0; i < samples; i++) {
                     double t = i / (double) sampleRate;
                     double sum = 0.0;
@@ -311,7 +288,6 @@ public class AdminFrame extends JFrame {
         int keepNo = -1;
         int sel = orderTable.getSelectedRow();
         if (sel >= 0) keepNo = (Integer) orderModel.getValueAt(sel, 0);
-
         orderModel.setRowCount(0);
         for (Order o : store.ordersSnapshot()) {
             if (!showFinished.isSelected() && o.status.isFinished()) continue;
@@ -327,7 +303,6 @@ public class AdminFrame extends JFrame {
             }
         }
     }
-
     /** 상태 칸 색상 */
     private static class StatusRenderer extends DefaultTableCellRenderer {
         @Override public Component getTableCellRendererComponent(JTable t, Object v, boolean sel, boolean foc, int r, int c) {
@@ -346,13 +321,11 @@ public class AdminFrame extends JFrame {
     }
 
     // ---------------------------------------------------------------- 메뉴 · 재고 탭
-
     private JComponent buildMenuTab() {
         menuTable.setRowHeight(26);
         menuTable.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
         menuTable.getTableHeader().setReorderingAllowed(false);
         menuTable.getColumnModel().getColumn(0).setMaxWidth(50);
-
         JButton add = new JButton("메뉴 추가");
         JButton edit = new JButton("메뉴 수정");
         JButton del = new JButton("메뉴 삭제");
@@ -392,7 +365,6 @@ public class AdminFrame extends JFrame {
             if (cur == null) return;
             store.setManualSoldOut(cur.id, !cur.manualSoldOut);
         });
-
         JPanel buttons = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 8));
         for (JButton b : new JButton[] { add, edit, del, stock, sold }) buttons.add(b);
         JPanel p = new JPanel(new BorderLayout());
@@ -427,7 +399,6 @@ public class AdminFrame extends JFrame {
             price.setText(String.valueOf(cur.price));
             stock.setText(String.valueOf(cur.stock));
         } else stock.setText("30");
-
         JPanel p = new JPanel(new GridLayout(0, 2, 6, 6));
         p.add(new JLabel("카테고리")); p.add(cat);
         p.add(new JLabel("메뉴 이름")); p.add(name);
@@ -455,9 +426,7 @@ public class AdminFrame extends JFrame {
         if (sel >= 0) keepId = (Integer) menuModel.getValueAt(sel, 0);
         menuModel.setRowCount(0);
         for (MenuItem m : store.menuSnapshot()) {
-		
 		String state;
-		
 		if (m.manualSoldOut) {
 		    state = "품절 (수동)";
 		} else if (m.stock <= 0) {
@@ -467,7 +436,6 @@ public class AdminFrame extends JFrame {
 		} else {
 		    state = "판매 중";
 		}
-
             menuModel.addRow(new Object[] { m.id, m.category, m.name, UiUtil.won(m.price), m.stock, state });
         }
         if (keepId >= 0) {
@@ -479,7 +447,6 @@ public class AdminFrame extends JFrame {
 
     // ---------------------------------------------------------------- 매출 통계 탭
     // 날짜를 고르면 그날의 메뉴별 판매 수량·매출과 주문 목록(주문 시각 포함)을 보여 주고, CSV 로 내보낼 수 있다.
-
     private JComponent buildStatsTab() {
         statsDateBox.setRenderer(new DefaultListCellRenderer() {
             @Override public Component getListCellRendererComponent(JList<?> list, Object value, int index,
@@ -493,24 +460,20 @@ public class AdminFrame extends JFrame {
             }
         });
         statsDateBox.addActionListener(e -> { if (!updatingStatsDates) showStats(); });
-
         JButton refresh = new JButton("새로고침");
         JButton export = new JButton("매출 통계 CSV 저장");
         refresh.addActionListener(e -> refreshStats());
         export.addActionListener(e -> exportStatsCsv());
-
         JPanel top = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 8));
         top.add(new JLabel("날짜"));
         top.add(statsDateBox);
         top.add(refresh);
         top.add(export);
-
         statsSummary.setFont(statsSummary.getFont().deriveFont(Font.BOLD, statsSummary.getFont().getSize2D() + 1f));
         statsSummary.setBorder(BorderFactory.createEmptyBorder(0, 12, 8, 12));
         JPanel north = new JPanel(new BorderLayout());
         north.add(top, BorderLayout.NORTH);
         north.add(statsSummary, BorderLayout.SOUTH);
-
         JTable menuTable = new JTable(statsMenuModel);
         JTable orderTable = new JTable(statsOrderModel);
         int[][] widths = { { 260, 100, 120 }, { 70, 150, 140, 380, 90, 80 } };
@@ -525,7 +488,6 @@ public class AdminFrame extends JFrame {
         menuTable.getColumnModel().getColumn(1).setCellRenderer(right);
         menuTable.getColumnModel().getColumn(2).setCellRenderer(right);
         orderTable.getColumnModel().getColumn(4).setCellRenderer(right);
-
         JScrollPane menuScroll = new JScrollPane(menuTable);
         JScrollPane orderScroll = new JScrollPane(orderTable);
         menuScroll.setBorder(BorderFactory.createTitledBorder("메뉴별 판매"));
@@ -533,20 +495,17 @@ public class AdminFrame extends JFrame {
         JSplitPane split = new JSplitPane(JSplitPane.VERTICAL_SPLIT, menuScroll, orderScroll);
         split.setResizeWeight(0.4);
         split.setBorder(BorderFactory.createEmptyBorder(0, 8, 8, 8));
-
         JPanel p = new JPanel(new BorderLayout());
         p.add(north, BorderLayout.NORTH);
         p.add(split, BorderLayout.CENTER);
         return p;
     }
-
     /** 날짜 목록을 다시 읽고(오늘은 주문이 없어도 포함), 고르고 있던 날짜의 통계를 다시 보여 준다. */
     private void refreshStats() {
         LocalDate keep = (LocalDate) statsDateBox.getSelectedItem();
         LocalDate today = LocalDate.now();
         List<LocalDate> dates = new ArrayList<>(store.orderDates());
         if (!dates.contains(today)) dates.add(0, today);
-
         updatingStatsDates = true;
         statsDateBox.removeAllItems();
         for (LocalDate d : dates) statsDateBox.addItem(d);
@@ -554,7 +513,6 @@ public class AdminFrame extends JFrame {
         updatingStatsDates = false;
         showStats();
     }
-
     /** 오늘 통계를 보고 있을 때만 새로고침 (새 주문·취소가 생겼을 때 호출) */
     private void refreshStatsIfToday() {
         LocalDate sel = (LocalDate) statsDateBox.getSelectedItem();
@@ -565,17 +523,14 @@ public class AdminFrame extends JFrame {
         LocalDate date = (LocalDate) statsDateBox.getSelectedItem();
         if (date == null) return;
         SalesReport r = store.salesReport(date);
-
         statsSummary.setText(date.format(STATS_DATE_FMT) + "   총 매출 " + UiUtil.won(r.totalAmount())
                 + "   ·   판매 " + r.totalQty() + "잔   ·   주문 " + r.orderCount() + "건"
                 + (r.canceledCount > 0 ? "   ·   취소 " + r.canceledCount + "건" : ""));
-
         statsMenuModel.setRowCount(0);
         for (SalesReport.MenuLine m : r.menuLines) {
             statsMenuModel.addRow(new Object[] { m.menuName, m.qty + "잔", UiUtil.won(m.amount) });
         }
         if (r.menuLines.isEmpty()) statsMenuModel.addRow(new Object[] { "(판매 내역 없음)", "", "" });
-
         statsOrderModel.setRowCount(0);
         for (Order o : r.orders) {
             statsOrderModel.addRow(new Object[] { o.displayNo(), statsTimeFmt.format(new Date(o.time)),
@@ -599,21 +554,57 @@ public class AdminFrame extends JFrame {
     }
 
     // ---------------------------------------------------------------- 회원 / 로그
-
     private JComponent buildMemberTab() {
         JTable t = new JTable(memberModel);
         t.setRowHeight(26);
+        t.setRowSorter(memberSorter);
+        JButton searchBtn = new JButton("검색");
+        JButton resetBtn = new JButton("초기화");
+        searchBtn.addActionListener(e -> searchMembers());
+        memberSearchField.addActionListener(e -> searchMembers());
+        resetBtn.addActionListener(e -> {
+            memberSearchField.setText("");
+            memberSorter.setRowFilter(null);
+            updateMemberCount();
+        });
+        JPanel searchPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 8));
+        searchPanel.add(new JLabel("학번 또는 이름"));
+        searchPanel.add(memberSearchField);
+        searchPanel.add(searchBtn);
+        searchPanel.add(resetBtn);
         JPanel p = new JPanel(new BorderLayout());
+        p.add(searchPanel, BorderLayout.NORTH);
         p.add(new JScrollPane(t), BorderLayout.CENTER);
         p.add(memberCount, BorderLayout.SOUTH);
         return p;
+    }
+
+    private void searchMembers() {
+        String keyword = memberSearchField.getText().trim();
+        if (keyword.isEmpty()) {
+            memberSorter.setRowFilter(null);
+        } else {
+            String pattern = "(?i)" + java.util.regex.Pattern.quote(keyword);
+            memberSorter.setRowFilter(RowFilter.regexFilter(pattern, 0, 1));
+        }
+        updateMemberCount();
+    }
+
+    private void updateMemberCount() {
+        int total = memberModel.getRowCount();
+        int shown = memberSorter.getViewRowCount();
+        if (memberSearchField.getText().trim().isEmpty()) {
+            memberCount.setText("  가입 회원 " + total + "명");
+        } else {
+            memberCount.setText("  검색 결과 " + shown + "명 / 전체 " + total + "명");
+        }
     }
 
     private void refreshMembers() {
         memberModel.setRowCount(0);
         List<Member> list = store.membersSnapshot();
         for (Member m : list) memberModel.addRow(new Object[] { m.id, m.name, m.email });
-        memberCount.setText("  가입 회원 " + list.size() + "명");
+        updateMemberCount();
     }
 
     private JComponent buildLogTab() {
