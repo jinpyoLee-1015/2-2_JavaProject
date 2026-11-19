@@ -6,6 +6,9 @@ import cafe.common.MenuItem;
 import javax.swing.*;
 import javax.swing.table.DefaultTableCellRenderer;
 import javax.swing.table.DefaultTableModel;
+import javax.swing.table.TableRowSorter;
+import javax.swing.event.DocumentEvent;
+import javax.swing.event.DocumentListener;
 import java.awt.*;
 import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
@@ -36,6 +39,9 @@ public class MainFrame extends JFrame implements ServerConnection.PushListener {
     // 메뉴 탭
     private final DefaultTableModel menuModel = readOnly("카테고리", "메뉴", "가격", "상태");
     private final JTable menuTable = new JTable(menuModel);
+    // 메뉴 검색: 카테고리 또는 메뉴 이름에 입력한 글자가 들어 있는 행만 보여 준다
+    private final JTextField searchField = new JTextField(14);
+    private final TableRowSorter<DefaultTableModel> menuSorter = new TableRowSorter<>(menuModel);
     private final JComboBox<String> sizeBox = new JComboBox<>(new String[] { Protocol.SIZE_BASIC, Protocol.SIZE_LARGE + " (+" + Protocol.SIZE_UP_PRICE + "원)" });
     private final JSpinner shotSpin = new JSpinner(new SpinnerNumberModel(0, 0, Protocol.MAX_SHOTS, 1));
     private final JSpinner qtySpin = new JSpinner(new SpinnerNumberModel(1, 1, Protocol.MAX_QTY, 1));
@@ -117,6 +123,8 @@ public class MainFrame extends JFrame implements ServerConnection.PushListener {
         menuTable.setRowHeight(28);
         menuTable.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
         menuTable.getTableHeader().setReorderingAllowed(false);
+        menuTable.setRowSorter(menuSorter);
+        for (int i = 0; i < menuModel.getColumnCount(); i++) menuSorter.setSortable(i, false); // 검색만 쓰고 정렬은 막는다
         menuTable.setDefaultRenderer(Object.class, new DefaultTableCellRenderer() {
             @Override public Component getTableCellRendererComponent(JTable t, Object v, boolean sel, boolean foc, int r, int c) {
                 Component comp = super.getTableCellRendererComponent(t, v, sel, foc, r, c);
@@ -143,7 +151,20 @@ public class MainFrame extends JFrame implements ServerConnection.PushListener {
         opt.add(priceLabel);
         opt.add(addBtn);
 
+        JPanel search = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 6));
+        JButton clearSearch = new JButton("지우기");
+        clearSearch.addActionListener(e -> searchField.setText(""));
+        searchField.getDocument().addDocumentListener(new DocumentListener() {
+            @Override public void insertUpdate(DocumentEvent e) { applyMenuFilter(); }
+            @Override public void removeUpdate(DocumentEvent e) { applyMenuFilter(); }
+            @Override public void changedUpdate(DocumentEvent e) { applyMenuFilter(); }
+        });
+        search.add(new JLabel("메뉴 검색"));
+        search.add(searchField);
+        search.add(clearSearch);
+
         JPanel p = new JPanel(new BorderLayout());
+        p.add(search, BorderLayout.NORTH);
         p.add(new JScrollPane(menuTable), BorderLayout.CENTER);
         p.add(opt, BorderLayout.SOUTH);
         return p;
@@ -214,6 +235,14 @@ public class MainFrame extends JFrame implements ServerConnection.PushListener {
     }
 
     // ---------------------------------------------------------------- 메뉴 / 장바구니 동작
+
+    /** 검색창 내용으로 메뉴 목록을 거른다 (카테고리/이름, 대소문자 구분 없음) */
+    private void applyMenuFilter() {
+        String q = searchField.getText().trim();
+        if (q.isEmpty()) menuSorter.setRowFilter(null);
+        else menuSorter.setRowFilter(RowFilter.regexFilter("(?i)" + java.util.regex.Pattern.quote(q), 0, 1));
+        updateMenuControls();
+    }
 
     private MenuItem selectedMenu() {
         int r = menuTable.getSelectedRow();
@@ -327,7 +356,11 @@ public class MainFrame extends JFrame implements ServerConnection.PushListener {
                 menuModel.addRow(new Object[] { m.category, m.name, UiUtil.won(m.price), m.isSoldOut() ? "품절" : "주문 가능" });
             }
             for (int i = 0; i < menu.size(); i++) {
-                if (menu.get(i).id == keepId) { menuTable.setRowSelectionInterval(i, i); break; }
+                if (menu.get(i).id == keepId) {
+                    int v = menuTable.convertRowIndexToView(i);
+                    if (v >= 0) menuTable.setRowSelectionInterval(v, v);
+                    break;
+                }
             }
             updateMenuControls();
         }, this::onError);
