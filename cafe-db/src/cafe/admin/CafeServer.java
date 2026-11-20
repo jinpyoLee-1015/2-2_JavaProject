@@ -7,6 +7,9 @@ import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
+import java.time.LocalDate;
+import java.time.LocalTime;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -24,6 +27,13 @@ public class CafeServer {
     private volatile Runnable onClientsChanged = () -> {};
     private ServerSocket server;
     private volatile boolean running;
+
+    // ---------------------------------------------------------------- 접속 통계 (하루 기준)
+    private LocalDate statsDate = LocalDate.now();
+    private int todayLogins;                                   // 오늘 로그인 성공 횟수
+    private final Set<String> todayMembers = new HashSet<>();  // 오늘 접속한 회원 학번 (중복 제외)
+    private int peakConcurrent;                                // 오늘 최대 동시 접속자 수
+    private LocalTime peakTime;                                // 최대 동시 접속을 기록한 시각
 
     private final DataStore.Listener pushListener = new DataStore.Listener() {
         @Override public void menuChanged() { broadcast(Protocol.pack("PUSH", "MENU")); }
@@ -60,7 +70,45 @@ public class CafeServer {
         for (ClientHandler h : clients) h.close();
         clients.clear();
         onClientsChanged.run();
+        rollOverIfNewDay();
+        log.accept("[통계] 오늘 접속 통계 - " + summary());
         log.accept("서버 중지");
+    }
+
+    /** 오늘 접속 통계 요약 (관리자 화면 등에서 사용) */
+    public synchronized String statsSummary() {
+        rollOverIfNewDay();
+        return summary();
+    }
+
+    /** 로그인 성공 시 통계 반영 */
+    private synchronized void recordLogin(Member m) {
+        rollOverIfNewDay();
+        todayLogins++;
+        todayMembers.add(m.id);
+        int now = loggedInCount();
+        if (now > peakConcurrent) {
+            peakConcurrent = now;
+            peakTime = LocalTime.now().withNano(0);
+            log.accept("[통계] 최대 동시 접속자 갱신: " + now + "명");
+        }
+    }
+
+    /** 날짜가 바뀌었으면 어제 통계를 로그에 남기고 0부터 다시 센다 */
+    private synchronized void rollOverIfNewDay() {
+        LocalDate today = LocalDate.now();
+        if (today.equals(statsDate)) return;
+        log.accept("[통계] " + statsDate + " 마감 - " + summary());
+        statsDate = today;
+        todayLogins = 0;
+        todayMembers.clear();
+        peakConcurrent = 0;
+        peakTime = null;
+    }
+
+    private String summary() {
+        return "로그인 " + todayLogins + "회, 방문 회원 " + todayMembers.size() + "명, 최대 동시 접속 "
+                + peakConcurrent + "명" + (peakTime == null ? "" : " (" + peakTime + ")");
     }
 
     /** 로그인 상태인 접속자 수 */
@@ -188,6 +236,7 @@ public class CafeServer {
                         user = m;
                     }
                     log.accept("로그인: " + m.name + " (" + m.id + ")");
+                    recordLogin(m);
                     onClientsChanged.run();
                     ok(m.name);
                     return;
