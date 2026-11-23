@@ -16,6 +16,8 @@ public class LoginFrame extends JFrame {
     private final JTextField idField = new JTextField(PREFS.get("id", ""), 14);
     private final JPasswordField pwField = new JPasswordField(14);
     private final JCheckBox showPw = new JCheckBox("비밀번호 보기");
+    // 체크하면 로그인 성공 시 학번을 기억해 두었다가 다음 실행 때 자동으로 채워 준다
+    private final JCheckBox saveId = new JCheckBox("아이디 저장", PREFS.getBoolean("saveId", true));
     private final JButton loginBtn = new JButton("로그인");
     private final JButton signupBtn = new JButton("회원가입");
     private final JLabel status = new JLabel(" ");
@@ -41,8 +43,11 @@ public class LoginFrame extends JFrame {
         addRow(form, g, 0, "서버 주소", server);
         addRow(form, g, 1, "학번", idField);
         addRow(form, g, 2, "비밀번호", pwField);
+        JPanel checks = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 0));
+        checks.add(saveId);
+        checks.add(showPw);
         g.gridx = 1; g.gridy = 3;
-        form.add(showPw, g);
+        form.add(checks, g);
 
         JLabel hint = new JLabel("<html><font color='gray'>서버 주소는 관리자 프로그램 상단에 표시된 IP를 입력하세요.</font></html>");
         g.gridx = 0; g.gridy = 4; g.gridwidth = 2;
@@ -136,7 +141,9 @@ public class LoginFrame extends JFrame {
             }
             PREFS.put("host", hostField.getText().trim());
             PREFS.put("port", portField.getText().trim());
-            PREFS.put("id", id);
+            PREFS.putBoolean("saveId", saveId.isSelected());
+            if (saveId.isSelected()) PREFS.put("id", id);
+            else PREFS.remove("id");
             pwField.setText("");
             MainFrame main = new MainFrame((ServerConnection) res[0], id, (String) res[1], hostField.getText().trim());
             main.setVisible(true);
