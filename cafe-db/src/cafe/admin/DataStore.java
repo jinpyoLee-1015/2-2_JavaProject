@@ -6,7 +6,6 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.security.MessageDigest;
 import java.sql.*;
 import java.text.SimpleDateFormat;
 import java.time.LocalDate;
@@ -115,15 +114,7 @@ public class DataStore {
 
     // ---------------------------------------------------------------- 회원
 
-    static String hash(String id, String pw) {
-        try {
-            MessageDigest md = MessageDigest.getInstance("SHA-256");
-            byte[] d = md.digest(("cafe:" + id + ":" + pw).getBytes(StandardCharsets.UTF_8));
-            StringBuilder sb = new StringBuilder();
-            for (byte b : d) sb.append(String.format("%02x", b));
-            return sb.toString();
-        } catch (Exception e) { throw new IllegalStateException(e); }
-    }
+    // 비밀번호는 PasswordUtil 로 salt + PBKDF2 해시해서 저장한다. (예전 SHA-256 회원은 로그인할 때 자동 변환)
 
     /** @return 오류 메시지 (성공이면 null) */
     public String signup(String id, String name, String email, String pw) {
@@ -153,7 +144,7 @@ public class DataStore {
                     ps.setString(1, id);
                     ps.setString(2, name);
                     ps.setString(3, email);
-                    ps.setString(4, hash(id, pw));
+                    ps.setString(4, PasswordUtil.hash(pw));
                     ps.executeUpdate();
                 }
             } catch (SQLException e) {
@@ -169,18 +160,34 @@ public class DataStore {
     public Member login(String id, String pw) {
         id = Protocol.clean(id);
         if (pw == null) return null;
-        try (Connection c = DBConnect.get();
-             PreparedStatement ps = c.prepareStatement("SELECT id, name, email, pw_hash FROM members WHERE id = ?")) {
-            ps.setString(1, id);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (!rs.next()) return null;
-                Member m = new Member(rs.getString("id"), rs.getString("name"),
-                        rs.getString("email"), rs.getString("pw_hash"));
-                return m.pwHash.equals(hash(m.id, pw)) ? m : null;
+        try (Connection c = DBConnect.get()) {
+            Member m;
+            try (PreparedStatement ps = c.prepareStatement("SELECT id, name, email, pw_hash FROM members WHERE id = ?")) {
+                ps.setString(1, id);
+                try (ResultSet rs = ps.executeQuery()) {
+                    if (!rs.next()) return null;
+                    m = new Member(rs.getString("id"), rs.getString("name"),
+                            rs.getString("email"), rs.getString("pw_hash"));
+                }
             }
+            if (!PasswordUtil.verify(m.id, pw, m.pwHash)) return null;
+            if (PasswordUtil.needsUpgrade(m.pwHash)) upgradePassword(c, m, pw);
+            return m;
         } catch (SQLException e) {
             dbError(e);
             return null;
+        }
+    }
+
+    /** 예전 방식(SHA-256)으로 저장된 비밀번호를 로그인 성공 시 새 방식(salt + PBKDF2)으로 바꿔 저장 */
+    private void upgradePassword(Connection c, Member m, String pw) {
+        try (PreparedStatement ps = c.prepareStatement("UPDATE members SET pw_hash = ? WHERE id = ? AND pw_hash = ?")) {
+            ps.setString(1, PasswordUtil.hash(pw));
+            ps.setString(2, m.id);
+            ps.setString(3, m.pwHash);   // 그사이 다른 곳에서 바뀌었으면 덮어쓰지 않는다
+            if (ps.executeUpdate() > 0) log.accept("비밀번호 저장 방식 변경 (SHA-256 → PBKDF2): " + m.id);
+        } catch (SQLException e) {
+            dbError(e);   // 실패해도 로그인은 그대로 성공 (다음 로그인 때 다시 시도)
         }
     }
 
@@ -672,32 +679,59 @@ public class DataStore {
         return list;
     }
 
+    /** 하루치 매출 통계 */
+    public SalesReport salesReport(LocalDate date) {
+        return salesReport(date, date);
+    }
+
     /**
-     * 하루치 매출 통계. 취소된 주문은 매출에서 빼고 건수만 따로 센다.
+     * 기간 매출 통계 (from ~ to, 두 날짜 포함). 취소된 주문은 매출에서 빼고 건수만 따로 센다.
      * 메뉴는 주문 당시 이름(menu_name)으로 묶으므로, 메뉴를 삭제하거나 가격을 바꿔도 지난 통계는 그대로다.
      */
-    public SalesReport salesReport(LocalDate date) {
-        java.sql.Date day = java.sql.Date.valueOf(date);
+    public SalesReport salesReport(LocalDate from, LocalDate to) {
+        if (to.isBefore(from)) { LocalDate t = from; from = to; to = t; }
+        java.sql.Date d1 = java.sql.Date.valueOf(from);
+        java.sql.Date d2 = java.sql.Date.valueOf(to);
         List<SalesReport.MenuLine> lines = new ArrayList<>();
+        List<SalesReport.DayLine> days = new ArrayList<>();
         List<Order> orders = new ArrayList<>();
         int canceled = 0;
         try (Connection c = DBConnect.get()) {
+            // 메뉴별 판매 수량·매출
             try (PreparedStatement ps = c.prepareStatement(
                     "SELECT i.menu_name, SUM(i.qty) AS qty, SUM(i.qty * i.unit_price) AS amount "
                             + "FROM orders o JOIN order_items i ON i.order_no = o.order_no "
-                            + "WHERE o.order_date = ? AND o.status <> 'CANCELED' "
+                            + "WHERE o.order_date BETWEEN ? AND ? AND o.status <> 'CANCELED' "
                             + "GROUP BY i.menu_name ORDER BY qty DESC, amount DESC, i.menu_name")) {
-                ps.setDate(1, day);
+                ps.setDate(1, d1);
+                ps.setDate(2, d2);
                 try (ResultSet rs = ps.executeQuery()) {
                     while (rs.next()) {
                         lines.add(new SalesReport.MenuLine(rs.getString("menu_name"), rs.getInt("qty"), rs.getInt("amount")));
                     }
                 }
             }
-            orders = queryOrders(c, "o.order_date = ? AND o.status <> 'CANCELED'", day);
+            // 날짜별 주문 건수·판매 수량·매출
             try (PreparedStatement ps = c.prepareStatement(
-                    "SELECT COUNT(*) FROM orders WHERE order_date = ? AND status = 'CANCELED'")) {
-                ps.setDate(1, day);
+                    "SELECT o.order_date, COUNT(DISTINCT o.order_no) AS cnt, SUM(i.qty) AS qty, "
+                            + "SUM(i.qty * i.unit_price) AS amount "
+                            + "FROM orders o JOIN order_items i ON i.order_no = o.order_no "
+                            + "WHERE o.order_date BETWEEN ? AND ? AND o.status <> 'CANCELED' "
+                            + "GROUP BY o.order_date ORDER BY o.order_date")) {
+                ps.setDate(1, d1);
+                ps.setDate(2, d2);
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        days.add(new SalesReport.DayLine(rs.getDate("order_date").toLocalDate(),
+                                rs.getInt("cnt"), rs.getInt("qty"), rs.getInt("amount")));
+                    }
+                }
+            }
+            orders = queryOrders(c, "o.order_date BETWEEN ? AND ? AND o.status <> 'CANCELED'", d1, d2);
+            try (PreparedStatement ps = c.prepareStatement(
+                    "SELECT COUNT(*) FROM orders WHERE order_date BETWEEN ? AND ? AND status = 'CANCELED'")) {
+                ps.setDate(1, d1);
+                ps.setDate(2, d2);
                 try (ResultSet rs = ps.executeQuery()) {
                     rs.next();
                     canceled = rs.getInt(1);
@@ -706,19 +740,36 @@ public class DataStore {
         } catch (SQLException e) {
             dbError(e);
         }
-        return new SalesReport(date, lines, orders, canceled);
+        return new SalesReport(from, to, lines, days, orders, canceled);
     }
 
-    /** 하루치 매출 통계를 엑셀용 CSV 로 저장 (요약 / 메뉴별 판매 / 주문 목록, BOM 포함) */
+    /** 하루치 매출 통계를 엑셀용 CSV 로 저장 */
     public void exportSalesCsv(LocalDate date, Path file) throws IOException {
-        SalesReport r = salesReport(date);
+        exportSalesCsv(SalesPeriod.DAY, date, file);
+    }
+
+    /** 기간 매출 통계를 엑셀용 CSV 로 저장 (요약 / 날짜별 매출 / 메뉴별 판매 / 주문 목록, BOM 포함) */
+    public void exportSalesCsv(SalesPeriod period, LocalDate start, Path file) throws IOException {
+        start = period.start(start);
+        SalesReport r = salesReport(start, period.end(start));
         SimpleDateFormat timeFmt = new SimpleDateFormat("MM월 dd일 HH시 mm분");
+        DateTimeFormatter dayFmt = DateTimeFormatter.ofPattern("yyyy-MM-dd (E)", Locale.KOREAN);
         List<String> lines = new ArrayList<>();
-        lines.add("\uFEFF" + CsvUtil.line("매출 통계", CsvUtil.text(date.format(DateTimeFormatter.ofPattern("yyyy년 MM월 dd일")))));
+        lines.add("\uFEFF" + CsvUtil.line(period.label + " 매출 통계", CsvUtil.text(period.describe(start))));
         lines.add(CsvUtil.line("총 매출", String.valueOf(r.totalAmount())));
         lines.add(CsvUtil.line("판매 수량(잔)", String.valueOf(r.totalQty())));
         lines.add(CsvUtil.line("주문 건수", String.valueOf(r.orderCount())));
         lines.add(CsvUtil.line("취소 건수", String.valueOf(r.canceledCount)));
+        if (period != SalesPeriod.DAY) {
+            lines.add(CsvUtil.line("영업일 수", String.valueOf(r.salesDays())));
+            lines.add(CsvUtil.line("하루 평균 매출", String.valueOf(r.averagePerDay())));
+            lines.add("");
+            lines.add(CsvUtil.line("날짜", "주문 건수", "판매 수량(잔)", "매출"));
+            for (SalesReport.DayLine d : r.dayLines) {
+                lines.add(CsvUtil.line(CsvUtil.text(d.date.format(dayFmt)), String.valueOf(d.orderCount),
+                        String.valueOf(d.qty), String.valueOf(d.amount)));
+            }
+        }
         lines.add("");
         lines.add(CsvUtil.line("메뉴", "판매 수량(잔)", "매출"));
         for (SalesReport.MenuLine m : r.menuLines) {
@@ -731,6 +782,6 @@ public class DataStore {
                     o.memberName, o.summary(), String.valueOf(o.total()), o.status.label));
         }
         Files.write(file, lines, StandardCharsets.UTF_8);
-        log.accept("매출 통계 CSV 저장: " + date + " → " + file.getFileName());
+        log.accept(period.label + " 매출 통계 CSV 저장: " + period.describe(start) + " → " + file.getFileName());
     }
 }

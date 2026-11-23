@@ -12,6 +12,7 @@ import java.util.List;
  *  1) orders 에 당일 대기번호(daily_no)와 주문 날짜(order_date) 열 추가 + 기존 주문 번호 채우기
  *  2) orders.status 를 VARCHAR 에서 ENUM 으로 변경
  *  3) CHECK 제약 추가 (재고·가격·수량이 음수가 되지 않도록)
+ *  4) members.pw_hash 를 VARCHAR(64) → VARCHAR(255) 로 넓힘 (salt + PBKDF2 형식은 64자보다 길다)
  * 이미 적용된 단계는 건너뛰므로 몇 번을 실행해도 안전하다.
  * 한 단계가 실패해도 프로그램은 계속 실행되고, 결과는 messages() 로 확인할 수 있다.
  */
@@ -37,6 +38,21 @@ final class SchemaMigration {
         addDailyNo(c);
         statusToEnum(c);
         addChecks(c);
+        widenPwHash(c);
+    }
+
+    // ---------------------------------------------------------------- 4) 비밀번호 열 길이
+
+    static final int PW_HASH_LENGTH = 255;
+
+    private void widenPwHash(Connection c) throws SQLException {
+        String type = columnType(c, "members", "pw_hash");          // 예: "varchar(64)"
+        if (type == null) return;
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("varchar\\((\\d+)\\)").matcher(type.toLowerCase());
+        if (m.matches() && Integer.parseInt(m.group(1)) >= PW_HASH_LENGTH) return;
+        exec(c, "ALTER TABLE members MODIFY pw_hash VARCHAR(" + PW_HASH_LENGTH + ") NOT NULL"
+                + " COMMENT '비밀번호 해시 (pbkdf2$반복$salt$해시, 예전 회원은 SHA-256)'");
+        messages.add("members.pw_hash 를 VARCHAR(" + PW_HASH_LENGTH + ") 으로 변경 (salt 적용 비밀번호 저장용)");
     }
 
     // ---------------------------------------------------------------- 1) 당일 대기번호

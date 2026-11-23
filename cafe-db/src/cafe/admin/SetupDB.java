@@ -20,7 +20,7 @@ public class SetupDB {
                     + " id VARCHAR(15) NOT NULL,"
                     + " name VARCHAR(20) NOT NULL,"
                     + " email VARCHAR(100) NOT NULL,"
-                    + " pw_hash VARCHAR(64) NOT NULL,"
+                    + " pw_hash VARCHAR(255) NOT NULL,"
                     + " joined_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,"
                     + " PRIMARY KEY (id),"
                     + " UNIQUE KEY uq_members_email (email))",

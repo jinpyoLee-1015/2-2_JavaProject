@@ -324,7 +324,7 @@ public class MainFrame extends JFrame implements ServerConnection.PushListener {
                 cart.clear();
                 refreshCart();
                 JOptionPane.showMessageDialog(this,
-                        "주문이 접수되었습니다!\n\n대기번호: " + r[1] + "번\n내 앞 대기: " + r[2] + "팀\n예상 소요 시간: 약 " + r[3] + "분",
+                        "주문이 접수되었습니다!\n\n대기번호: " + (r.length > 4 ? r[4] : r[1]) + "번\n내 앞 대기: " + r[2] + "팀\n예상 소요 시간: 약 " + r[3] + "분",
                         "주문 완료", JOptionPane.INFORMATION_MESSAGE);
                 tabs.setSelectedIndex(2);
             } else {
@@ -376,8 +376,9 @@ public class MainFrame extends JFrame implements ServerConnection.PushListener {
                 String[] f = Protocol.unpack(r[i]);
                 Order o = Order.fromFields(f);
                 int ahead = Integer.parseInt(f[7]);
+                int shownNo = f.length > 8 ? Integer.parseInt(f[8]) : o.no;   // 당일 대기번호 (없으면 고유번호)
                 myOrders.add(o);
-                rows.add(0, new Object[] { o.no, o.summary(), UiUtil.won(o.total()), o.status.label,
+                rows.add(0, new Object[] { shownNo, o.summary(), UiUtil.won(o.total()), o.status.label,
                         o.status.isQueued() ? ahead + "팀" : "-", timeFmt.format(new Date(o.time)),
                         o.status.isQueued() ? expectedTime(ahead) : "-" });
             }
@@ -405,8 +406,10 @@ public class MainFrame extends JFrame implements ServerConnection.PushListener {
             JOptionPane.showMessageDialog(this, "취소할 주문을 선택해 주세요.");
             return;
         }
-        int no = (Integer) orderModel.getValueAt(orderTable.convertRowIndexToModel(row), 0);
-        if (JOptionPane.showConfirmDialog(this, "대기번호 " + no + "번 주문을 취소할까요?", "주문 취소",
+        int modelRow = orderTable.convertRowIndexToModel(row);
+        int no = myOrders.get(modelRow).no;                    // 서버에 보낼 주문 고유번호
+        Object shownNo = orderModel.getValueAt(modelRow, 0);   // 화면에 보이는 당일 대기번호
+        if (JOptionPane.showConfirmDialog(this, "대기번호 " + shownNo + "번 주문을 취소할까요?", "주문 취소",
                 JOptionPane.YES_NO_OPTION) != JOptionPane.YES_OPTION) return;
         UiUtil.async(() -> conn.request("CANCEL", String.valueOf(no)), r -> {
             if (!r[0].equals("OK")) JOptionPane.showMessageDialog(this, r[1], "취소 불가", JOptionPane.WARNING_MESSAGE);
@@ -423,7 +426,7 @@ public class MainFrame extends JFrame implements ServerConnection.PushListener {
             if (f.length >= 5 && f[1].equals("ORDER")) {
                 refreshOrders();
                 refreshQueue();
-                if (f[4].equals(myId)) notifyMyOrder(f[2], Status.fromName(f[3]));
+                if (f[4].equals(myId)) notifyMyOrder(f.length >= 6 ? f[5] : f[2], Status.fromName(f[3]));
             }
         });
     }

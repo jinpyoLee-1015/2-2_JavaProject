@@ -38,7 +38,9 @@ public class CafeServer {
     private final DataStore.Listener pushListener = new DataStore.Listener() {
         @Override public void menuChanged() { broadcast(Protocol.pack("PUSH", "MENU")); }
         @Override public void orderChanged(Order o) {
-            broadcast(Protocol.pack("PUSH", "ORDER", String.valueOf(o.no), o.status.name(), o.memberId));
+            // 마지막 칸(f[5])은 화면에 보여 줄 당일 대기번호
+            broadcast(Protocol.pack("PUSH", "ORDER", String.valueOf(o.no), o.status.name(), o.memberId,
+                    String.valueOf(o.displayNo())));
         }
     };
 
@@ -278,8 +280,10 @@ public class CafeServer {
                     try {
                         Order o = store.placeOrder(user, OrderItem.unpackList(f[1]));
                         int ahead = store.aheadOf(o.no);
+                        // 마지막 칸(r[4])은 화면에 보여 줄 당일 대기번호
                         ok(String.valueOf(o.no), String.valueOf(ahead),
-                                String.valueOf((ahead + 1) * Protocol.MINUTES_PER_ORDER));
+                                String.valueOf((ahead + 1) * Protocol.MINUTES_PER_ORDER),
+                                String.valueOf(o.displayNo()));
                     } catch (DataStore.OrderException e) {
                         err(e.getMessage());
                     }
@@ -292,9 +296,11 @@ public class CafeServer {
                     for (int i = 0; i < mine.size(); i++) {
                         Order o = mine.get(i);
                         String[] of = o.toFields();
-                        String[] withAhead = new String[of.length + 1];
+                        // f[7] = 내 앞 대기 팀 수, f[8] = 화면에 보여 줄 당일 대기번호
+                        String[] withAhead = new String[of.length + 2];
                         System.arraycopy(of, 0, withAhead, 0, of.length);
                         withAhead[of.length] = String.valueOf(store.aheadOf(o.no));
+                        withAhead[of.length + 1] = String.valueOf(o.displayNo());
                         r[i + 1] = Protocol.pack(withAhead);
                     }
                     send(Protocol.pack(r));

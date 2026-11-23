@@ -30,6 +30,8 @@ public class AdminFrame extends JFrame {
     private final JLabel clientLabel = new JLabel("접속자 0명");
     private final DefaultTableModel orderModel = readOnlyModel("대기번호", "회원", "주문 내용", "금액", "상태", "주문 시각");
     private final JTable orderTable = new JTable(orderModel);
+    // 표의 각 행에 해당하는 주문 고유번호 (표에는 당일 대기번호를 보여 주고, 상태 변경·취소는 이 번호로 한다)
+    private final List<Integer> orderRowNos = new ArrayList<>();
     private final JCheckBox showFinished = new JCheckBox("수령 완료/취소 주문도 표시");
     private final JCheckBox orderSoundEnabled = new JCheckBox("새 주문 알림음", true);
     private final Set<Integer> knownOrderNumbers = new HashSet<>();
@@ -40,8 +42,11 @@ public class AdminFrame extends JFrame {
     private final JTextField memberSearchField = new JTextField(18);
     private final TableRowSorter<DefaultTableModel> memberSorter = new TableRowSorter<>(memberModel);
     // 매출 통계 탭
-    private static final DateTimeFormatter STATS_DATE_FMT = DateTimeFormatter.ofPattern("yyyy년 MM월 dd일 (E)", Locale.KOREAN);
-    private final JComboBox<LocalDate> statsDateBox = new JComboBox<>();
+    private static final DateTimeFormatter STATS_DAY_FMT = DateTimeFormatter.ofPattern("MM월 dd일 (E)", Locale.KOREAN);
+    private final JComboBox<SalesPeriod> statsPeriodBox = new JComboBox<>(SalesPeriod.values());   // 일별 / 주별 / 월별
+    private final JComboBox<LocalDate> statsDateBox = new JComboBox<>();                          // 기간 시작 날짜
+    private final DefaultTableModel statsDayModel = readOnlyModel("날짜", "주문 건수", "판매 수량", "매출");
+    private final JTabbedPane statsBottomTabs = new JTabbedPane();
     private final JLabel statsSummary = new JLabel(" ");
     private final DefaultTableModel statsMenuModel = readOnlyModel("메뉴", "판매 수량", "매출");
     private final DefaultTableModel statsOrderModel = readOnlyModel("대기번호", "주문 시각", "회원", "주문 내용", "금액", "상태");
@@ -174,9 +179,11 @@ public class AdminFrame extends JFrame {
         ready.addActionListener(e -> changeStatus(Status.READY));
         done.addActionListener(e -> changeStatus(Status.DONE));
         cancel.addActionListener(e -> {
-            int no = selectedOrderNo();
-            if (no < 0) return;
-            if (JOptionPane.showConfirmDialog(this, "#" + no + " 주문을 취소할까요? (재고가 복구됩니다)", "주문 취소",
+            int row = selectedOrderRow();
+            if (row < 0) return;
+            int no = orderRowNos.get(row);
+            if (JOptionPane.showConfirmDialog(this, "대기번호 " + orderModel.getValueAt(row, 0)
+                    + "번 주문을 취소할까요? (재고가 복구됩니다)", "주문 취소",
                     JOptionPane.YES_NO_OPTION) != JOptionPane.YES_OPTION) return;
             String err = store.cancelOrder(no, null);
             if (err != null) JOptionPane.showMessageDialog(this, err);
@@ -200,7 +207,7 @@ public class AdminFrame extends JFrame {
 
     private void notifyNewOrder(Order order) {
         if (order.status != Status.WAITING || !knownOrderNumbers.add(order.no)) return;
-        appendLog("새 주문 접수 #" + order.no + " - " + order.memberName);
+        appendLog("새 주문 접수 대기번호 " + order.displayNo() + "번 - " + order.memberName);
         if (orderSoundEnabled.isSelected()) playOrderBell();
     }
     // WAV 파일 없이 코드로 부드러운 2음 카페 주문벨 생성
@@ -255,13 +262,20 @@ public class AdminFrame extends JFrame {
         audioThread.start();
     }
 
-    private int selectedOrderNo() {
+    /** 선택한 주문의 표 행 번호 (선택 안 했으면 안내 후 -1) */
+    private int selectedOrderRow() {
         int row = orderTable.getSelectedRow();
         if (row < 0) {
             JOptionPane.showMessageDialog(this, "표에서 주문을 먼저 선택해 주세요.");
             return -1;
         }
-        return (Integer) orderModel.getValueAt(orderTable.convertRowIndexToModel(row), 0);
+        return orderTable.convertRowIndexToModel(row);
+    }
+
+    /** 선택한 주문의 고유번호 (선택 안 했으면 -1) */
+    private int selectedOrderNo() {
+        int row = selectedOrderRow();
+        return row < 0 ? -1 : orderRowNos.get(row);
     }
 
     private void changeStatus(Status next) {
@@ -287,19 +301,20 @@ public class AdminFrame extends JFrame {
     private void refreshOrders() {
         int keepNo = -1;
         int sel = orderTable.getSelectedRow();
-        if (sel >= 0) keepNo = (Integer) orderModel.getValueAt(sel, 0);
+        if (sel >= 0) keepNo = orderRowNos.get(orderTable.convertRowIndexToModel(sel));
         orderModel.setRowCount(0);
+        orderRowNos.clear();
         for (Order o : store.ordersSnapshot()) {
             if (!showFinished.isSelected() && o.status.isFinished()) continue;
-            orderModel.addRow(new Object[] { o.no, o.memberName + " (" + o.memberId + ")", o.summary(),
+            orderRowNos.add(o.no);
+            orderModel.addRow(new Object[] { o.displayNo(), o.memberName + " (" + o.memberId + ")", o.summary(),
                     UiUtil.won(o.total()), o.status.label, timeFmt.format(new Date(o.time)) });
         }
         if (keepNo >= 0) {
-            for (int i = 0; i < orderModel.getRowCount(); i++) {
-                if ((Integer) orderModel.getValueAt(i, 0) == keepNo) {
-                    orderTable.setRowSelectionInterval(i, i);
-                    break;
-                }
+            int i = orderRowNos.indexOf(keepNo);
+            if (i >= 0) {
+                int v = orderTable.convertRowIndexToView(i);
+                if (v >= 0) orderTable.setRowSelectionInterval(v, v);
             }
         }
     }
@@ -446,7 +461,12 @@ public class AdminFrame extends JFrame {
     }
 
     // ---------------------------------------------------------------- 매출 통계 탭
-    // 날짜를 고르면 그날의 메뉴별 판매 수량·매출과 주문 목록(주문 시각 포함)을 보여 주고, CSV 로 내보낼 수 있다.
+    // 일별 / 주별 / 월별 중 하나와 기간을 고르면 메뉴별 판매 수량·매출, 날짜별 매출, 주문 목록을 보여 주고 CSV 로 내보낸다.
+    private SalesPeriod statsPeriod() {
+        SalesPeriod p = (SalesPeriod) statsPeriodBox.getSelectedItem();
+        return p == null ? SalesPeriod.DAY : p;
+    }
+
     private JComponent buildStatsTab() {
         statsDateBox.setRenderer(new DefaultListCellRenderer() {
             @Override public Component getListCellRendererComponent(JList<?> list, Object value, int index,
@@ -454,18 +474,26 @@ public class AdminFrame extends JFrame {
                 super.getListCellRendererComponent(list, value, index, sel, focus);
                 if (value instanceof LocalDate) {
                     LocalDate d = (LocalDate) value;
-                    setText(d.format(STATS_DATE_FMT) + (d.equals(LocalDate.now()) ? "  - 오늘" : ""));
+                    SalesPeriod p = statsPeriod();
+                    setText(p.describe(d) + (p.contains(d, LocalDate.now()) ? "  - " + p.currentTag() : ""));
                 }
                 return this;
             }
         });
         statsDateBox.addActionListener(e -> { if (!updatingStatsDates) showStats(); });
+        statsPeriodBox.addActionListener(e -> {
+            refreshStats();   // 보던 날짜가 들어 있는 주·달로 바뀐다
+            // 주별·월별은 날짜별 매출 표를, 일별은 주문 목록을 먼저 보여 준다
+            statsBottomTabs.setSelectedIndex(statsPeriod() == SalesPeriod.DAY ? 1 : 0);
+        });
         JButton refresh = new JButton("새로고침");
         JButton export = new JButton("매출 통계 CSV 저장");
         refresh.addActionListener(e -> refreshStats());
         export.addActionListener(e -> exportStatsCsv());
         JPanel top = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 8));
-        top.add(new JLabel("날짜"));
+        top.add(new JLabel("보기"));
+        top.add(statsPeriodBox);
+        top.add(new JLabel("기간"));
         top.add(statsDateBox);
         top.add(refresh);
         top.add(export);
@@ -475,9 +503,10 @@ public class AdminFrame extends JFrame {
         north.add(top, BorderLayout.NORTH);
         north.add(statsSummary, BorderLayout.SOUTH);
         JTable menuTable = new JTable(statsMenuModel);
+        JTable dayTable = new JTable(statsDayModel);
         JTable orderTable = new JTable(statsOrderModel);
-        int[][] widths = { { 260, 100, 120 }, { 70, 150, 140, 380, 90, 80 } };
-        JTable[] tables = { menuTable, orderTable };
+        int[][] widths = { { 260, 100, 120 }, { 200, 100, 100, 120 }, { 70, 150, 140, 380, 90, 80 } };
+        JTable[] tables = { menuTable, dayTable, orderTable };
         for (int t = 0; t < tables.length; t++) {
             tables[t].setRowHeight(26);
             tables[t].getTableHeader().setReorderingAllowed(false);
@@ -487,12 +516,14 @@ public class AdminFrame extends JFrame {
         right.setHorizontalAlignment(SwingConstants.RIGHT);
         menuTable.getColumnModel().getColumn(1).setCellRenderer(right);
         menuTable.getColumnModel().getColumn(2).setCellRenderer(right);
+        for (int i = 1; i <= 3; i++) dayTable.getColumnModel().getColumn(i).setCellRenderer(right);
         orderTable.getColumnModel().getColumn(4).setCellRenderer(right);
         JScrollPane menuScroll = new JScrollPane(menuTable);
-        JScrollPane orderScroll = new JScrollPane(orderTable);
         menuScroll.setBorder(BorderFactory.createTitledBorder("메뉴별 판매"));
-        orderScroll.setBorder(BorderFactory.createTitledBorder("주문 목록 (취소 제외)"));
-        JSplitPane split = new JSplitPane(JSplitPane.VERTICAL_SPLIT, menuScroll, orderScroll);
+        statsBottomTabs.addTab("날짜별 매출", new JScrollPane(dayTable));
+        statsBottomTabs.addTab("주문 목록 (취소 제외)", new JScrollPane(orderTable));
+        statsBottomTabs.setSelectedIndex(1);
+        JSplitPane split = new JSplitPane(JSplitPane.VERTICAL_SPLIT, menuScroll, statsBottomTabs);
         split.setResizeWeight(0.4);
         split.setBorder(BorderFactory.createEmptyBorder(0, 8, 8, 8));
         JPanel p = new JPanel(new BorderLayout());
@@ -500,37 +531,50 @@ public class AdminFrame extends JFrame {
         p.add(split, BorderLayout.CENTER);
         return p;
     }
-    /** 날짜 목록을 다시 읽고(오늘은 주문이 없어도 포함), 고르고 있던 날짜의 통계를 다시 보여 준다. */
+    /** 기간 목록을 다시 읽고(오늘이 든 기간은 주문이 없어도 포함), 고르고 있던 기간의 통계를 다시 보여 준다. */
     private void refreshStats() {
+        SalesPeriod period = statsPeriod();
         LocalDate keep = (LocalDate) statsDateBox.getSelectedItem();
-        LocalDate today = LocalDate.now();
-        List<LocalDate> dates = new ArrayList<>(store.orderDates());
-        if (!dates.contains(today)) dates.add(0, today);
+        if (keep != null) keep = period.start(keep);   // 일별 ↔ 주별 ↔ 월별로 바꿔도 보던 날짜가 든 기간을 고른다
+        LocalDate current = period.start(LocalDate.now());
+        List<LocalDate> starts = period.starts(store.orderDates(), LocalDate.now());
         updatingStatsDates = true;
         statsDateBox.removeAllItems();
-        for (LocalDate d : dates) statsDateBox.addItem(d);
-        statsDateBox.setSelectedItem(keep != null && dates.contains(keep) ? keep : today);
+        for (LocalDate d : starts) statsDateBox.addItem(d);
+        statsDateBox.setSelectedItem(keep != null && starts.contains(keep) ? keep : current);
         updatingStatsDates = false;
         showStats();
     }
-    /** 오늘 통계를 보고 있을 때만 새로고침 (새 주문·취소가 생겼을 때 호출) */
+    /** 오늘이 든 기간을 보고 있을 때만 새로고침 (새 주문·취소가 생겼을 때 호출) */
     private void refreshStatsIfToday() {
         LocalDate sel = (LocalDate) statsDateBox.getSelectedItem();
-        if (sel == null || sel.equals(LocalDate.now())) refreshStats();
+        if (sel == null || statsPeriod().contains(sel, LocalDate.now())) refreshStats();
     }
 
     private void showStats() {
-        LocalDate date = (LocalDate) statsDateBox.getSelectedItem();
-        if (date == null) return;
-        SalesReport r = store.salesReport(date);
-        statsSummary.setText(date.format(STATS_DATE_FMT) + "   총 매출 " + UiUtil.won(r.totalAmount())
+        LocalDate start = (LocalDate) statsDateBox.getSelectedItem();
+        if (start == null) return;
+        SalesPeriod period = statsPeriod();
+        SalesReport r = store.salesReport(start, period.end(start));
+        String text = period.describe(start) + "   총 매출 " + UiUtil.won(r.totalAmount())
                 + "   ·   판매 " + r.totalQty() + "잔   ·   주문 " + r.orderCount() + "건"
-                + (r.canceledCount > 0 ? "   ·   취소 " + r.canceledCount + "건" : ""));
+                + (r.canceledCount > 0 ? "   ·   취소 " + r.canceledCount + "건" : "");
+        if (period != SalesPeriod.DAY) {
+            text += "   ·   하루 평균 " + UiUtil.won(r.averagePerDay()) + " (영업 " + r.salesDays() + "일)";
+        }
+        statsSummary.setText(text);
         statsMenuModel.setRowCount(0);
         for (SalesReport.MenuLine m : r.menuLines) {
             statsMenuModel.addRow(new Object[] { m.menuName, m.qty + "잔", UiUtil.won(m.amount) });
         }
         if (r.menuLines.isEmpty()) statsMenuModel.addRow(new Object[] { "(판매 내역 없음)", "", "" });
+        statsDayModel.setRowCount(0);
+        SalesReport.DayLine best = r.bestDay();
+        for (SalesReport.DayLine d : r.dayLines) {
+            String day = d.date.format(STATS_DAY_FMT) + (r.dayLines.size() > 1 && d == best ? "  ★ 최고" : "");
+            statsDayModel.addRow(new Object[] { day, d.orderCount + "건", d.qty + "잔", UiUtil.won(d.amount) });
+        }
+        if (r.dayLines.isEmpty()) statsDayModel.addRow(new Object[] { "(판매 내역 없음)", "", "", "" });
         statsOrderModel.setRowCount(0);
         for (Order o : r.orders) {
             statsOrderModel.addRow(new Object[] { o.displayNo(), statsTimeFmt.format(new Date(o.time)),
@@ -539,14 +583,15 @@ public class AdminFrame extends JFrame {
     }
 
     private void exportStatsCsv() {
-        LocalDate date = (LocalDate) statsDateBox.getSelectedItem();
-        if (date == null) return;
+        LocalDate start = (LocalDate) statsDateBox.getSelectedItem();
+        if (start == null) return;
+        SalesPeriod period = statsPeriod();
         JFileChooser fc = new JFileChooser();
-        fc.setSelectedFile(new File("매출통계_" + date.format(DateTimeFormatter.ofPattern("yyyyMMdd")) + ".csv"));
+        fc.setSelectedFile(new File("매출통계_" + period.label + "_" + period.fileTag(start) + ".csv"));
         if (fc.showSaveDialog(this) != JFileChooser.APPROVE_OPTION) return;
         Path p = fc.getSelectedFile().toPath();
         try {
-            store.exportSalesCsv(date, p);
+            store.exportSalesCsv(period, start, p);
             JOptionPane.showMessageDialog(this, "저장했습니다.\n" + p);
         } catch (Exception e) {
             JOptionPane.showMessageDialog(this, "저장 실패: " + e.getMessage(), "오류", JOptionPane.ERROR_MESSAGE);

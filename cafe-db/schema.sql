@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS members (
     id        VARCHAR(15)  NOT NULL COMMENT '학번',
     name      VARCHAR(20)  NOT NULL,
     email     VARCHAR(100) NOT NULL,
-    pw_hash   VARCHAR(64)  NOT NULL COMMENT 'SHA-256 해시',
+    pw_hash   VARCHAR(255) NOT NULL COMMENT '비밀번호 해시 (pbkdf2$반복$salt$해시)',
     joined_at DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (id),
     UNIQUE KEY uq_members_email (email)
