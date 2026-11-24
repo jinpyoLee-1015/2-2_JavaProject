@@ -15,6 +15,12 @@ public final class Protocol {
     public static final int MAX_SHOTS = 3;
     public static final int MAX_QTY = 10;
 
+    /**
+     * 관리자 공지 PUSH (서버 → 로그인한 모든 회원)
+     * 형식: PUSH|NOTICE|공지 내용
+     */
+    public static final String PUSH_NOTICE = "NOTICE";
+
     private Protocol() {}
 
     public static String pack(String... fields) {

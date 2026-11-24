@@ -162,6 +162,19 @@ public class CafeServer {
         for (ClientHandler h : clients) if (h.user != null) h.send(line);
     }
 
+    /**
+     * 관리자 공지를 로그인한 모든 회원에게 전송한다. (PUSH|NOTICE|내용)
+     * @return 문제가 있으면 오류 메시지, 정상 전송이면 null
+     */
+    public String sendNotice(String message) {
+        String msg = message == null ? "" : message.trim();
+        if (!running) return "서버가 실행 중이 아닙니다.";
+        if (msg.isEmpty()) return "공지 내용을 입력해 주세요.";
+        broadcast(Protocol.pack("PUSH", Protocol.PUSH_NOTICE, msg));
+        log.accept("[공지] " + msg + " (" + loggedInCount() + "명에게 전송)");
+        return null;
+    }
+
     // ---------------------------------------------------------------- 접속자 1명 담당
 
     private class ClientHandler extends Thread {
