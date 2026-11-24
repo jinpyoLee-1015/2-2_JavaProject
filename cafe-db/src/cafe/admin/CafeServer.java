@@ -22,6 +22,7 @@ import java.util.function.Consumer;
  */
 public class CafeServer {
     private final DataStore store;
+    private final Object memberActionLock = new Object();
     private final Set<ClientHandler> clients = ConcurrentHashMap.newKeySet();
     private volatile Consumer<String> log = s -> {};
     private volatile Runnable onClientsChanged = () -> {};
@@ -45,6 +46,18 @@ public class CafeServer {
     };
 
     public CafeServer(DataStore store) { this.store = store; }
+
+    public String forceWithdraw(String id) {
+        synchronized (memberActionLock) {
+            String err = store.forceWithdraw(id);
+            if (err != null) return err;
+            for (ClientHandler h : clients) {
+                Member m = h.user;
+                if (m != null && m.id.equals(id)) h.close();
+            }
+            return null;
+        }
+    }
 
     public void setLog(Consumer<String> log) { this.log = log; }
     public void setOnClientsChanged(Runnable r) { this.onClientsChanged = r; }
@@ -186,7 +199,15 @@ public class CafeServer {
                 while ((line = in.readLine()) != null) {
                     String[] f = Protocol.unpack(line);
                     try {
-                        handle(f);
+                        switch (f[0]) {
+                            case "SIGNUP": case "LOGIN": case "LOGOUT": case "WITHDRAW": case "ORDER": case "CANCEL":
+                                synchronized (memberActionLock) {
+                                    if (!socket.isClosed()) handle(f);
+                                }
+                                break;
+                            default:
+                                if (!socket.isClosed()) handle(f);
+                        }
                     } catch (RuntimeException e) {
                         send(Protocol.pack("ERR", "잘못된 요청입니다."));
                         log.accept("[오류] 요청 처리 실패 " + addr + ": " + e);

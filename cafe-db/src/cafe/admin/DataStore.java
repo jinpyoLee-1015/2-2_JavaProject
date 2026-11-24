@@ -218,6 +218,30 @@ public class DataStore {
         return null;
     }
 
+    public String forceWithdraw(String id) {
+        synchronized (this) {
+            try (Connection c = DBConnect.get()) {
+                try (PreparedStatement ps = c.prepareStatement(
+                        "SELECT COUNT(*) FROM orders WHERE member_id = ? AND status IN ('WAITING','MAKING','READY')")) {
+                    ps.setString(1, id);
+                    try (ResultSet rs = ps.executeQuery()) {
+                        rs.next();
+                        if (rs.getInt(1) > 0) return "진행 중인 주문이 있어 강제 탈퇴할 수 없습니다.";
+                    }
+                }
+                try (PreparedStatement ps = c.prepareStatement("DELETE FROM members WHERE id = ?")) {
+                    ps.setString(1, id);
+                    if (ps.executeUpdate() == 0) return "이미 탈퇴했거나 존재하지 않는 회원입니다.";
+                }
+            } catch (SQLException e) {
+                return dbError(e);
+            }
+        }
+        log.accept("관리자 회원 강제 탈퇴: " + id);
+        listeners.forEach(Listener::membersChanged);
+        return null;
+    }
+
     public List<Member> membersSnapshot() {
         List<Member> list = new ArrayList<>();
         try (Connection c = DBConnect.get();

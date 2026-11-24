@@ -603,8 +603,11 @@ public class AdminFrame extends JFrame {
         JTable t = new JTable(memberModel);
         t.setRowHeight(26);
         t.setRowSorter(memberSorter);
+        t.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
         JButton searchBtn = new JButton("검색");
         JButton resetBtn = new JButton("초기화");
+        JButton withdrawBtn = new JButton("강제 탈퇴");
+        withdrawBtn.addActionListener(e -> forceWithdrawMember(t));
         searchBtn.addActionListener(e -> searchMembers());
         memberSearchField.addActionListener(e -> searchMembers());
         resetBtn.addActionListener(e -> {
@@ -617,11 +620,32 @@ public class AdminFrame extends JFrame {
         searchPanel.add(memberSearchField);
         searchPanel.add(searchBtn);
         searchPanel.add(resetBtn);
+        searchPanel.add(withdrawBtn);
         JPanel p = new JPanel(new BorderLayout());
         p.add(searchPanel, BorderLayout.NORTH);
         p.add(new JScrollPane(t), BorderLayout.CENTER);
         p.add(memberCount, BorderLayout.SOUTH);
         return p;
+    }
+
+    private void forceWithdrawMember(JTable table) {
+        int row = table.getSelectedRow();
+        if (row < 0) {
+            JOptionPane.showMessageDialog(this, "탈퇴시킬 회원을 먼저 선택해 주세요.");
+            return;
+        }
+        int modelRow = table.convertRowIndexToModel(row);
+        String id = String.valueOf(memberModel.getValueAt(modelRow, 0));
+        String name = String.valueOf(memberModel.getValueAt(modelRow, 1));
+        if (JOptionPane.showConfirmDialog(this, name + " (" + id + ") 회원을 강제 탈퇴시킬까요?",
+                "회원 강제 탈퇴", JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE) != JOptionPane.YES_OPTION) return;
+        String err = server.forceWithdraw(id);
+        if (err != null) {
+            JOptionPane.showMessageDialog(this, err, "탈퇴 실패", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+        refreshMembers();
+        JOptionPane.showMessageDialog(this, "회원 강제 탈퇴가 완료되었습니다.");
     }
 
     private void searchMembers() {
