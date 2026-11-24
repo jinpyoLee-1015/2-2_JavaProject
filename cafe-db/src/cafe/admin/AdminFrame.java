@@ -25,6 +25,8 @@ public class AdminFrame extends JFrame {
     private final CafeServer server;
     private final JTextField portField = new JTextField(String.valueOf(Protocol.DEFAULT_PORT), 5);
     private final JButton serverBtn = new JButton("서버 시작");
+    private final JTextField noticeField = new JTextField(40);
+    private final JButton noticeBtn = new JButton("공지 보내기");
     private final JLabel serverStatus = new JLabel("● 서버 중지됨");
     private final JLabel addressLabel = new JLabel(" ");
     private final JLabel clientLabel = new JLabel("접속자 0명");
@@ -99,7 +101,6 @@ public class AdminFrame extends JFrame {
     // ---------------------------------------------------------------- 상단 서버 바
     private JComponent buildTopBar() {
         JPanel bar = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 8));
-        bar.setBorder(BorderFactory.createMatteBorder(0, 0, 1, 0, Color.LIGHT_GRAY));
         bar.add(new JLabel("포트"));
         bar.add(portField);
         bar.add(serverBtn);
@@ -108,7 +109,30 @@ public class AdminFrame extends JFrame {
         bar.add(addressLabel);
         bar.add(clientLabel);
         serverBtn.addActionListener(e -> toggleServer());
-        return bar;
+
+        // 공지 보내기 줄 (로그인한 모든 회원에게 PUSH)
+        JPanel noticeBar = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 4));
+        noticeBar.add(new JLabel("공지"));
+        noticeBar.add(noticeField);
+        noticeBar.add(noticeBtn);
+        noticeBtn.addActionListener(e -> sendNotice());
+        noticeField.addActionListener(e -> sendNotice());   // 입력칸에서 Enter 로도 전송
+
+        JPanel top = new JPanel(new BorderLayout());
+        top.setBorder(BorderFactory.createMatteBorder(0, 0, 1, 0, Color.LIGHT_GRAY));
+        top.add(bar, BorderLayout.NORTH);
+        top.add(noticeBar, BorderLayout.SOUTH);
+        return top;
+    }
+
+    /** 입력한 공지를 접속 중인 회원에게 전송 */
+    private void sendNotice() {
+        String err = server.sendNotice(noticeField.getText());
+        if (err != null) {
+            JOptionPane.showMessageDialog(this, err, "공지", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+        noticeField.setText("");
     }
 
     private void toggleServer() {

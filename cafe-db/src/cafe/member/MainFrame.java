@@ -423,6 +423,9 @@ public class MainFrame extends JFrame implements ServerConnection.PushListener {
         SwingUtilities.invokeLater(() -> {
             if (leaving) return;
             if (f.length >= 2 && f[1].equals("MENU")) refreshMenu();
+            if (f.length >= 3 && f[1].equals(Protocol.PUSH_NOTICE)) {
+                JOptionPane.showMessageDialog(this, f[2], "카페 공지", JOptionPane.INFORMATION_MESSAGE);
+            }
             if (f.length >= 5 && f[1].equals("ORDER")) {
                 refreshOrders();
                 refreshQueue();
