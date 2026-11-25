@@ -21,8 +21,9 @@ import java.util.List;
 public class MainFrame extends JFrame implements ServerConnection.PushListener {
     private final ServerConnection conn;
     private final String myId;
-    private final String myName;
+    private String myName;   // 내 정보 수정으로 바뀔 수 있다
     private final String host;
+    private final JLabel helloLabel = new JLabel();
 
     private final List<MenuItem> menu = new ArrayList<>();
     private final List<OrderItem> cart = new ArrayList<>();
@@ -79,7 +80,7 @@ public class MainFrame extends JFrame implements ServerConnection.PushListener {
         conn.setListener(this);
         refreshAll();
 
-        setSize(860, 600);
+        setSize(1000, 600);
         setLocationRelativeTo(null);
     }
 
@@ -88,11 +89,15 @@ public class MainFrame extends JFrame implements ServerConnection.PushListener {
     private JComponent buildHeader() {
         JPanel h = new JPanel(new BorderLayout());
         h.setBorder(BorderFactory.createEmptyBorder(8, 12, 8, 12));
-        JLabel hello = new JLabel(myName + "님 (" + myId + ")  |  서버 " + host);
+        updateHello();
         queueLabel.setFont(queueLabel.getFont().deriveFont(Font.BOLD));
         queueLabel.setForeground(new Color(180, 70, 0));
+        JButton profile = new JButton("내 정보");
+        JButton changePw = new JButton("비밀번호 변경");
         JButton logout = new JButton("로그아웃");
         JButton withdraw = new JButton("회원탈퇴");
+        profile.addActionListener(e -> doEditProfile());
+        changePw.addActionListener(e -> doChangePassword());
         logout.addActionListener(e -> leave(false));
         withdraw.addActionListener(e -> doWithdraw());
         JPanel right = new JPanel(new FlowLayout(FlowLayout.RIGHT, 6, 0));
@@ -101,9 +106,11 @@ public class MainFrame extends JFrame implements ServerConnection.PushListener {
         updateClock();
         clockTimer.start();
         right.add(clockLabel);
+        right.add(profile);
+        right.add(changePw);
         right.add(logout);
         right.add(withdraw);
-        h.add(hello, BorderLayout.WEST);
+        h.add(helloLabel, BorderLayout.WEST);
         h.add(queueLabel, BorderLayout.CENTER);
         queueLabel.setHorizontalAlignment(SwingConstants.CENTER);
         h.add(right, BorderLayout.EAST);
@@ -469,6 +476,80 @@ public class MainFrame extends JFrame implements ServerConnection.PushListener {
         leaving = true;
         UiUtil.async(() -> { try { conn.request("LOGOUT"); } catch (Exception ignore) {} return null; },
                 r -> backToLogin(), e -> backToLogin());
+    }
+
+    // ---------------------------------------------------------------- 내 정보 / 비밀번호 변경
+
+    private void updateHello() {
+        helloLabel.setText(myName + "님 (" + myId + ")  |  서버 " + host);
+        setTitle("교내 카페 사전 주문 - " + myName + "님");
+    }
+
+    /** 서버에서 현재 이름·이메일을 받아 온 뒤 수정 창을 띄운다 */
+    private void doEditProfile() {
+        UiUtil.async(() -> conn.request("PROFILE"), r -> {
+            if (r[0].equals("OK")) showProfileDialog(r[1], r[2]);
+            else JOptionPane.showMessageDialog(this, r[1], "내 정보", JOptionPane.WARNING_MESSAGE);
+        }, this::onError);
+    }
+
+    private void showProfileDialog(String curName, String curEmail) {
+        JTextField name = new JTextField(curName, 16);
+        JTextField email = new JTextField(curEmail, 16);
+        JPasswordField pw = new JPasswordField(16);
+        JPanel p = new JPanel(new GridLayout(0, 2, 6, 6));
+        p.add(new JLabel("학번")); p.add(new JLabel(myId));
+        p.add(new JLabel("이름")); p.add(name);
+        p.add(new JLabel("이메일")); p.add(email);
+        p.add(new JLabel("현재 비밀번호 (확인용)")); p.add(pw);
+        if (JOptionPane.showConfirmDialog(this, p, "내 정보 수정", JOptionPane.OK_CANCEL_OPTION,
+                JOptionPane.PLAIN_MESSAGE) != JOptionPane.OK_OPTION) return;
+        String n = name.getText().trim();
+        String m = email.getText().trim();
+        String pass = new String(pw.getPassword());
+        if (pass.isEmpty()) {
+            JOptionPane.showMessageDialog(this, "현재 비밀번호를 입력해 주세요.", "내 정보 수정", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+        UiUtil.async(() -> conn.request("UPDATE_PROFILE", pass, n, m), r -> {
+            if (r[0].equals("OK")) {
+                myName = r[1];
+                updateHello();
+                JOptionPane.showMessageDialog(this, "내 정보가 수정되었습니다.");
+            } else {
+                JOptionPane.showMessageDialog(this, r[1], "수정 실패", JOptionPane.WARNING_MESSAGE);
+            }
+        }, this::onError);
+    }
+
+    private void doChangePassword() {
+        JPasswordField cur = new JPasswordField(16);
+        JPasswordField pw1 = new JPasswordField(16);
+        JPasswordField pw2 = new JPasswordField(16);
+        JPanel p = new JPanel(new GridLayout(0, 2, 6, 6));
+        p.add(new JLabel("현재 비밀번호")); p.add(cur);
+        p.add(new JLabel("새 비밀번호 (4자 이상)")); p.add(pw1);
+        p.add(new JLabel("새 비밀번호 확인")); p.add(pw2);
+        if (JOptionPane.showConfirmDialog(this, p, "비밀번호 변경", JOptionPane.OK_CANCEL_OPTION,
+                JOptionPane.PLAIN_MESSAGE) != JOptionPane.OK_OPTION) return;
+        String c = new String(cur.getPassword());
+        String n1 = new String(pw1.getPassword());
+        String n2 = new String(pw2.getPassword());
+        if (c.isEmpty() || n1.isEmpty()) {
+            JOptionPane.showMessageDialog(this, "현재 비밀번호와 새 비밀번호를 모두 입력해 주세요.", "비밀번호 변경", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+        if (!n1.equals(n2)) {
+            JOptionPane.showMessageDialog(this, "새 비밀번호와 확인이 일치하지 않습니다.", "비밀번호 변경", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+        UiUtil.async(() -> conn.request("CHANGE_PW", c, n1), r -> {
+            if (r[0].equals("OK")) {
+                JOptionPane.showMessageDialog(this, "비밀번호가 변경되었습니다.\n다음 로그인부터 새 비밀번호를 사용하세요.");
+            } else {
+                JOptionPane.showMessageDialog(this, r[1], "변경 실패", JOptionPane.WARNING_MESSAGE);
+            }
+        }, this::onError);
     }
 
     private void doWithdraw() {

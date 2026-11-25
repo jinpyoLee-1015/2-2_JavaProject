@@ -218,6 +218,85 @@ public class DataStore {
         return null;
     }
 
+    /** 학번으로 회원 한 명을 읽는다. (없거나 DB 오류면 null) */
+    public Member findMember(String id) {
+        try (Connection c = DBConnect.get();
+             PreparedStatement ps = c.prepareStatement("SELECT id, name, email, pw_hash FROM members WHERE id = ?")) {
+            ps.setString(1, id);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (!rs.next()) return null;
+                return new Member(rs.getString("id"), rs.getString("name"),
+                        rs.getString("email"), rs.getString("pw_hash"));
+            }
+        } catch (SQLException e) {
+            dbError(e);
+            return null;
+        }
+    }
+
+    /**
+     * 내 정보(이름·이메일) 수정. 본인 확인을 위해 현재 비밀번호가 필요하다.
+     * 학번은 로그인 아이디(기본키)라서 바꾸지 않는다.
+     * 지난 주문의 member_name 은 주문 당시 이름 그대로 남는다. (기록 보존)
+     * @return 오류 메시지 (성공이면 null)
+     */
+    public String updateProfile(String id, String pw, String name, String email) {
+        name = Protocol.clean(name);
+        email = Protocol.clean(email);
+        if (name.isEmpty() || name.length() > 20) return "이름을 20자 이내로 입력해 주세요.";
+        if (!email.matches("[^@\\s]+@[^@\\s]+\\.[^@\\s]+")) return "이메일 형식이 올바르지 않습니다.";
+        synchronized (this) {
+            Member m = login(id, pw);
+            if (m == null) return "비밀번호가 올바르지 않습니다.";
+            if (m.name.equals(name) && m.email.equals(email)) return "바뀐 내용이 없습니다.";
+            try (Connection c = DBConnect.get()) {
+                try (PreparedStatement ps = c.prepareStatement(
+                        "SELECT 1 FROM members WHERE LOWER(email) = LOWER(?) AND id <> ?")) {
+                    ps.setString(1, email);
+                    ps.setString(2, m.id);
+                    try (ResultSet rs = ps.executeQuery()) {
+                        if (rs.next()) return "이미 다른 회원이 사용 중인 이메일입니다.";
+                    }
+                }
+                try (PreparedStatement ps = c.prepareStatement("UPDATE members SET name = ?, email = ? WHERE id = ?")) {
+                    ps.setString(1, name);
+                    ps.setString(2, email);
+                    ps.setString(3, m.id);
+                    ps.executeUpdate();
+                }
+            } catch (SQLException e) {
+                if (e.getErrorCode() == MYSQL_DUPLICATE_KEY) return "이미 다른 회원이 사용 중인 이메일입니다.";
+                return dbError(e);
+            }
+            log.accept("회원정보 수정: " + m.id + " (" + m.name + " → " + name + ")");
+        }
+        listeners.forEach(Listener::membersChanged);
+        return null;
+    }
+
+    /**
+     * 비밀번호 변경. 현재 비밀번호를 확인한 뒤 새 비밀번호를 PBKDF2 로 저장한다.
+     * @return 오류 메시지 (성공이면 null)
+     */
+    public String changePassword(String id, String currentPw, String newPw) {
+        if (newPw == null || newPw.length() < 4) return "새 비밀번호는 4자 이상이어야 합니다.";
+        if (newPw.equals(currentPw)) return "새 비밀번호가 현재 비밀번호와 같습니다.";
+        synchronized (this) {
+            Member m = login(id, currentPw);
+            if (m == null) return "현재 비밀번호가 올바르지 않습니다.";
+            try (Connection c = DBConnect.get();
+                 PreparedStatement ps = c.prepareStatement("UPDATE members SET pw_hash = ? WHERE id = ?")) {
+                ps.setString(1, PasswordUtil.hash(newPw));
+                ps.setString(2, m.id);
+                ps.executeUpdate();
+            } catch (SQLException e) {
+                return dbError(e);
+            }
+        }
+        log.accept("비밀번호 변경: " + id);
+        return null;
+    }
+
     public String forceWithdraw(String id) {
         synchronized (this) {
             try (Connection c = DBConnect.get()) {

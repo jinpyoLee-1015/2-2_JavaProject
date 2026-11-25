@@ -161,7 +161,7 @@ public class LoginFrame extends JFrame {
         JPasswordField pw = new JPasswordField(14);
         JPasswordField pw2 = new JPasswordField(14);
         JPanel p = new JPanel(new GridLayout(0, 2, 6, 6));
-        p.add(new JLabel("학번 (영문/숫자 4~15자)")); p.add(id);
+        p.add(new JLabel("학번")); p.add(id);
         p.add(new JLabel("이름")); p.add(name);
         p.add(new JLabel("이메일")); p.add(email);
         p.add(new JLabel("비밀번호 (4자 이상)")); p.add(pw);

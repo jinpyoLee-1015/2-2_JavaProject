@@ -214,6 +214,7 @@ public class CafeServer {
                     try {
                         switch (f[0]) {
                             case "SIGNUP": case "LOGIN": case "LOGOUT": case "WITHDRAW": case "ORDER": case "CANCEL":
+                            case "UPDATE_PROFILE": case "CHANGE_PW":
                                 synchronized (memberActionLock) {
                                     if (!socket.isClosed()) handle(f);
                                 }
@@ -295,6 +296,26 @@ public class CafeServer {
                         onClientsChanged.run();
                         ok();
                     } else err(e);
+                    break;
+                }
+                case "PROFILE":   // 내 정보 조회 → OK|이름|이메일
+                    ok(user.name, user.email);
+                    break;
+                case "UPDATE_PROFILE": {   // UPDATE_PROFILE|현재 비밀번호|새 이름|새 이메일
+                    String e = store.updateProfile(user.id, f[1], f[2], f[3]);
+                    if (e != null) { err(e); break; }
+                    Member m = store.findMember(user.id);
+                    if (m != null) user = m;
+                    onClientsChanged.run();
+                    ok(user.name, user.email);
+                    break;
+                }
+                case "CHANGE_PW": {   // CHANGE_PW|현재 비밀번호|새 비밀번호
+                    String e = store.changePassword(user.id, f[1], f[2]);
+                    if (e != null) { err(e); break; }
+                    Member m = store.findMember(user.id);
+                    if (m != null) user = m;
+                    ok();
                     break;
                 }
                 case "MENU": {
