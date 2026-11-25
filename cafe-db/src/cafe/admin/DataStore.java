@@ -782,6 +782,51 @@ public class DataStore {
         return list;
     }
 
+    // ---------------------------------------------------------------- 관리자 공지
+
+    /**
+     * 공지를 DB 에 저장한다. (서버를 껐다 켜도 남고, 나중에 로그인한 회원도 볼 수 있다)
+     * @return 저장된 공지 (내용이 비었거나 DB 오류면 null)
+     */
+    public Notice addNotice(String content) {
+        String text = Protocol.clean(content);
+        if (text.isEmpty()) return null;
+        if (text.length() > Notice.MAX_LENGTH) text = text.substring(0, Notice.MAX_LENGTH);
+        long now = System.currentTimeMillis();
+        try (Connection c = DBConnect.get();
+             PreparedStatement ps = c.prepareStatement(
+                     "INSERT INTO notices (content, created_at) VALUES (?, ?)", Statement.RETURN_GENERATED_KEYS)) {
+            ps.setString(1, text);
+            ps.setTimestamp(2, new Timestamp(now));
+            ps.executeUpdate();
+            try (ResultSet k = ps.getGeneratedKeys()) {
+                k.next();
+                return new Notice(k.getInt(1), text, now);
+            }
+        } catch (SQLException e) {
+            dbError(e);
+            return null;
+        }
+    }
+
+    /** 최근 공지 (최신 공지가 먼저) */
+    public List<Notice> recentNotices(int limit) {
+        List<Notice> list = new ArrayList<>();
+        try (Connection c = DBConnect.get();
+             PreparedStatement ps = c.prepareStatement(
+                     "SELECT notice_no, content, created_at FROM notices ORDER BY created_at DESC, notice_no DESC LIMIT ?")) {
+            ps.setInt(1, limit);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    list.add(new Notice(rs.getInt(1), rs.getString(2), rs.getTimestamp(3).getTime()));
+                }
+            }
+        } catch (SQLException e) {
+            dbError(e);
+        }
+        return list;
+    }
+
     /** 하루치 매출 통계 */
     public SalesReport salesReport(LocalDate date) {
         return salesReport(date, date);
@@ -797,6 +842,7 @@ public class DataStore {
         java.sql.Date d2 = java.sql.Date.valueOf(to);
         List<SalesReport.MenuLine> lines = new ArrayList<>();
         List<SalesReport.DayLine> days = new ArrayList<>();
+        List<SalesReport.HourLine> hours = new ArrayList<>();
         List<Order> orders = new ArrayList<>();
         int canceled = 0;
         try (Connection c = DBConnect.get()) {
@@ -830,6 +876,21 @@ public class DataStore {
                     }
                 }
             }
+            // 시간대별 주문 건수·판매 수량·매출 (기간 안의 모든 날을 시간대별로 합친다)
+            try (PreparedStatement ps = c.prepareStatement(
+                    "SELECT HOUR(o.order_time) AS h, COUNT(DISTINCT o.order_no) AS cnt, SUM(i.qty) AS qty, "
+                            + "SUM(i.qty * i.unit_price) AS amount "
+                            + "FROM orders o JOIN order_items i ON i.order_no = o.order_no "
+                            + "WHERE o.order_date BETWEEN ? AND ? AND o.status <> 'CANCELED' "
+                            + "GROUP BY HOUR(o.order_time) ORDER BY h")) {
+                ps.setDate(1, d1);
+                ps.setDate(2, d2);
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        hours.add(new SalesReport.HourLine(rs.getInt("h"), rs.getInt("cnt"), rs.getInt("qty"), rs.getInt("amount")));
+                    }
+                }
+            }
             orders = queryOrders(c, "o.order_date BETWEEN ? AND ? AND o.status <> 'CANCELED'", d1, d2);
             try (PreparedStatement ps = c.prepareStatement(
                     "SELECT COUNT(*) FROM orders WHERE order_date BETWEEN ? AND ? AND status = 'CANCELED'")) {
@@ -843,7 +904,7 @@ public class DataStore {
         } catch (SQLException e) {
             dbError(e);
         }
-        return new SalesReport(from, to, lines, days, orders, canceled);
+        return new SalesReport(from, to, lines, days, hours, orders, canceled);
     }
 
     /** 하루치 매출 통계를 엑셀용 CSV 로 저장 */
@@ -851,7 +912,7 @@ public class DataStore {
         exportSalesCsv(SalesPeriod.DAY, date, file);
     }
 
-    /** 기간 매출 통계를 엑셀용 CSV 로 저장 (요약 / 날짜별 매출 / 메뉴별 판매 / 주문 목록, BOM 포함) */
+    /** 기간 매출 통계를 엑셀용 CSV 로 저장 (요약 / 날짜별 매출 / 시간대별 매출 / 메뉴별 판매 / 주문 목록, BOM 포함) */
     public void exportSalesCsv(SalesPeriod period, LocalDate start, Path file) throws IOException {
         start = period.start(start);
         SalesReport r = salesReport(start, period.end(start));
@@ -872,6 +933,13 @@ public class DataStore {
                 lines.add(CsvUtil.line(CsvUtil.text(d.date.format(dayFmt)), String.valueOf(d.orderCount),
                         String.valueOf(d.qty), String.valueOf(d.amount)));
             }
+        }
+        lines.add("");
+        lines.add(CsvUtil.line("시간대", "주문 건수", "판매 수량(잔)", "매출", "주문 비중(%)"));
+        int hourTotal = r.hourOrderTotal();
+        for (SalesReport.HourLine h : r.hourLines) {
+            lines.add(CsvUtil.line(h.label(), String.valueOf(h.orderCount), String.valueOf(h.qty), String.valueOf(h.amount),
+                    String.format("%.1f", hourTotal == 0 ? 0.0 : h.orderCount * 100.0 / hourTotal)));
         }
         lines.add("");
         lines.add(CsvUtil.line("메뉴", "판매 수량(잔)", "매출"));

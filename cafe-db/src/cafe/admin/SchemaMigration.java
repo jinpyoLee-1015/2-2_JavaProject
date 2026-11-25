@@ -13,6 +13,7 @@ import java.util.List;
  *  2) orders.status 를 VARCHAR 에서 ENUM 으로 변경
  *  3) CHECK 제약 추가 (재고·가격·수량이 음수가 되지 않도록)
  *  4) members.pw_hash 를 VARCHAR(64) → VARCHAR(255) 로 넓힘 (salt + PBKDF2 형식은 64자보다 길다)
+ *  5) 관리자 공지를 저장하는 notices 테이블 만들기
  * 이미 적용된 단계는 건너뛰므로 몇 번을 실행해도 안전하다.
  * 한 단계가 실패해도 프로그램은 계속 실행되고, 결과는 messages() 로 확인할 수 있다.
  */
@@ -39,6 +40,27 @@ final class SchemaMigration {
         statusToEnum(c);
         addChecks(c);
         widenPwHash(c);
+        createNotices(c);
+    }
+
+    // ---------------------------------------------------------------- 5) 공지 테이블
+
+    /** notices 테이블 정의 (schema.sql / SetupDB 와 같은 내용) */
+    static final String NOTICES_COLUMNS = "notice_no INT NOT NULL AUTO_INCREMENT,"
+            + " content VARCHAR(200) NOT NULL COMMENT '공지 내용',"
+            + " created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '올린 시각',"
+            + " PRIMARY KEY (notice_no),"
+            + " KEY idx_notices_time (created_at)";
+
+    private void createNotices(Connection c) throws SQLException {
+        try (PreparedStatement ps = c.prepareStatement(
+                "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'notices'");
+             ResultSet rs = ps.executeQuery()) {
+            rs.next();
+            if (rs.getInt(1) > 0) return;
+        }
+        exec(c, "CREATE TABLE notices (" + NOTICES_COLUMNS + ") COMMENT '관리자 공지'");
+        messages.add("관리자 공지를 저장하는 notices 테이블 생성");
     }
 
     // ---------------------------------------------------------------- 4) 비밀번호 열 길이

@@ -74,6 +74,15 @@ CREATE TABLE IF NOT EXISTS order_items (
     CONSTRAINT fk_items_order FOREIGN KEY (order_no) REFERENCES orders (order_no) ON DELETE CASCADE
 );
 
+-- 관리자 공지 (회원 화면 오른쪽 아래 공지칸에 최근 공지를 보여 준다)
+CREATE TABLE IF NOT EXISTS notices (
+    notice_no  INT          NOT NULL AUTO_INCREMENT,
+    content    VARCHAR(200) NOT NULL COMMENT '공지 내용',
+    created_at DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '올린 시각',
+    PRIMARY KEY (notice_no),
+    KEY idx_notices_time (created_at)
+) COMMENT '관리자 공지';
+
 -- CHECK 제약은 MySQL 8.0.16 이상에서만 실제로 검사된다. (그 미만 버전은 문법만 받아들이고 무시)
 -- 예전 구조로 이미 만든 DB 는 관리자 프로그램이 시작할 때 SchemaMigration 이 새 구조로 자동 변경한다.
 

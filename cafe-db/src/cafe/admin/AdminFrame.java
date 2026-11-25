@@ -48,6 +48,8 @@ public class AdminFrame extends JFrame {
     private final JComboBox<SalesPeriod> statsPeriodBox = new JComboBox<>(SalesPeriod.values());   // 일별 / 주별 / 월별
     private final JComboBox<LocalDate> statsDateBox = new JComboBox<>();                          // 기간 시작 날짜
     private final DefaultTableModel statsDayModel = readOnlyModel("날짜", "주문 건수", "판매 수량", "매출");
+    private final DefaultTableModel statsHourModel = readOnlyModel("시간대", "주문 건수", "판매 수량", "매출", "주문 비중");
+    private static final int STATS_TAB_DAY = 0, STATS_TAB_HOUR = 1, STATS_TAB_ORDERS = 2;   // 아래쪽 탭 순서
     private final JTabbedPane statsBottomTabs = new JTabbedPane();
     private final JLabel statsSummary = new JLabel(" ");
     private final DefaultTableModel statsMenuModel = readOnlyModel("메뉴", "판매 수량", "매출");
@@ -508,7 +510,7 @@ public class AdminFrame extends JFrame {
         statsPeriodBox.addActionListener(e -> {
             refreshStats();   // 보던 날짜가 들어 있는 주·달로 바뀐다
             // 주별·월별은 날짜별 매출 표를, 일별은 주문 목록을 먼저 보여 준다
-            statsBottomTabs.setSelectedIndex(statsPeriod() == SalesPeriod.DAY ? 1 : 0);
+            statsBottomTabs.setSelectedIndex(statsPeriod() == SalesPeriod.DAY ? STATS_TAB_ORDERS : STATS_TAB_DAY);
         });
         JButton refresh = new JButton("새로고침");
         JButton export = new JButton("매출 통계 CSV 저장");
@@ -528,9 +530,10 @@ public class AdminFrame extends JFrame {
         north.add(statsSummary, BorderLayout.SOUTH);
         JTable menuTable = new JTable(statsMenuModel);
         JTable dayTable = new JTable(statsDayModel);
+        JTable hourTable = new JTable(statsHourModel);
         JTable orderTable = new JTable(statsOrderModel);
-        int[][] widths = { { 260, 100, 120 }, { 200, 100, 100, 120 }, { 70, 150, 140, 380, 90, 80 } };
-        JTable[] tables = { menuTable, dayTable, orderTable };
+        int[][] widths = { { 260, 100, 120 }, { 200, 100, 100, 120 }, { 150, 90, 90, 120, 360 }, { 70, 150, 140, 380, 90, 80 } };
+        JTable[] tables = { menuTable, dayTable, hourTable, orderTable };
         for (int t = 0; t < tables.length; t++) {
             tables[t].setRowHeight(26);
             tables[t].getTableHeader().setReorderingAllowed(false);
@@ -541,12 +544,15 @@ public class AdminFrame extends JFrame {
         menuTable.getColumnModel().getColumn(1).setCellRenderer(right);
         menuTable.getColumnModel().getColumn(2).setCellRenderer(right);
         for (int i = 1; i <= 3; i++) dayTable.getColumnModel().getColumn(i).setCellRenderer(right);
+        for (int i = 1; i <= 3; i++) hourTable.getColumnModel().getColumn(i).setCellRenderer(right);
+        hourTable.getColumnModel().getColumn(4).setCellRenderer(new ShareBarRenderer());
         orderTable.getColumnModel().getColumn(4).setCellRenderer(right);
         JScrollPane menuScroll = new JScrollPane(menuTable);
         menuScroll.setBorder(BorderFactory.createTitledBorder("메뉴별 판매"));
-        statsBottomTabs.addTab("날짜별 매출", new JScrollPane(dayTable));
-        statsBottomTabs.addTab("주문 목록 (취소 제외)", new JScrollPane(orderTable));
-        statsBottomTabs.setSelectedIndex(1);
+        statsBottomTabs.addTab("날짜별 매출", new JScrollPane(dayTable));         // STATS_TAB_DAY
+        statsBottomTabs.addTab("시간대별 매출", new JScrollPane(hourTable));      // STATS_TAB_HOUR
+        statsBottomTabs.addTab("주문 목록 (취소 제외)", new JScrollPane(orderTable)); // STATS_TAB_ORDERS
+        statsBottomTabs.setSelectedIndex(STATS_TAB_ORDERS);
         JSplitPane split = new JSplitPane(JSplitPane.VERTICAL_SPLIT, menuScroll, statsBottomTabs);
         split.setResizeWeight(0.4);
         split.setBorder(BorderFactory.createEmptyBorder(0, 8, 8, 8));
@@ -599,6 +605,16 @@ public class AdminFrame extends JFrame {
             statsDayModel.addRow(new Object[] { day, d.orderCount + "건", d.qty + "잔", UiUtil.won(d.amount) });
         }
         if (r.dayLines.isEmpty()) statsDayModel.addRow(new Object[] { "(판매 내역 없음)", "", "", "" });
+        // 시간대별: 주문이 가장 많은 시간대에 ★, 비중은 막대로 표시
+        statsHourModel.setRowCount(0);
+        SalesReport.HourLine busiest = r.busiestHour();
+        int hourTotal = r.hourOrderTotal();
+        for (SalesReport.HourLine h : r.hourLines) {
+            String label = h.label() + (r.hourLines.size() > 1 && h == busiest ? "  ★ 최다" : "");
+            double share = hourTotal == 0 ? 0 : (double) h.orderCount / hourTotal;
+            statsHourModel.addRow(new Object[] { label, h.orderCount + "건", h.qty + "잔", UiUtil.won(h.amount), share });
+        }
+        if (r.hourLines.isEmpty()) statsHourModel.addRow(new Object[] { "(판매 내역 없음)", "", "", "", null });
         statsOrderModel.setRowCount(0);
         for (Order o : r.orders) {
             statsOrderModel.addRow(new Object[] { o.displayNo(), statsTimeFmt.format(new Date(o.time)),
@@ -729,5 +745,39 @@ public class AdminFrame extends JFrame {
         return new DefaultTableModel(cols, 0) {
             @Override public boolean isCellEditable(int r, int c) { return false; }
         };
+    }
+
+    /** 시간대별 주문 비중을 가로 막대 + 퍼센트로 그리는 표 칸 (가장 많은 시간대 = 칸 너비 가득) */
+    private static class ShareBarRenderer extends DefaultTableCellRenderer {
+        private double share;     // 0 ~ 1
+        private double max = 1;   // 표에서 가장 큰 비중 (막대 길이 기준)
+
+        @Override public Component getTableCellRendererComponent(JTable t, Object v, boolean sel, boolean foc, int r, int c) {
+            super.getTableCellRendererComponent(t, "", sel, foc, r, c);
+            share = v instanceof Double ? (Double) v : -1;
+            max = 0;
+            for (int i = 0; i < t.getRowCount(); i++) {
+                Object o = t.getValueAt(i, c);
+                if (o instanceof Double) max = Math.max(max, (Double) o);
+            }
+            if (max <= 0) max = 1;
+            return this;
+        }
+
+        @Override protected void paintComponent(Graphics g) {
+            super.paintComponent(g);
+            if (share < 0) return;
+            Graphics2D g2 = (Graphics2D) g.create();
+            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+            int textW = 56, pad = 4;
+            int barMax = Math.max(0, getWidth() - textW - pad * 3);
+            int w = (int) Math.round(barMax * (share / max));
+            g2.setColor(new Color(82, 130, 196));
+            g2.fillRoundRect(pad, pad + 2, w, getHeight() - pad * 2 - 4, 4, 4);
+            g2.setColor(getForeground());
+            String txt = String.format("%.1f%%", share * 100);
+            g2.drawString(txt, pad * 2 + w, (getHeight() + g2.getFontMetrics().getAscent()) / 2 - 2);
+            g2.dispose();
+        }
     }
 }

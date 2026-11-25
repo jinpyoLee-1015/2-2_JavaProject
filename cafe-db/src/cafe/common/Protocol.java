@@ -17,9 +17,12 @@ public final class Protocol {
 
     /**
      * 관리자 공지 PUSH (서버 → 로그인한 모든 회원)
-     * 형식: PUSH|NOTICE|공지 내용
+     * 형식: PUSH|NOTICE|공지 내용|올린 시각(ms)
+     * 지난 공지는 NOTICES 요청으로 받는다. → OK|번호|내용|시각 묶음 (최신 순)
      */
     public static final String PUSH_NOTICE = "NOTICE";
+    /** 회원 화면 공지칸에 보여 줄 최근 공지 개수 */
+    public static final int NOTICE_COUNT = 5;
 
     private Protocol() {}
 

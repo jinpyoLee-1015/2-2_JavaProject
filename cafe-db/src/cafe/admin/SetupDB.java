@@ -8,7 +8,7 @@ import java.sql.SQLException;
 import java.sql.Statement;
 
 /**
- * cafe 데이터베이스와 테이블 4개를 만든다. (schema.sql 과 같은 내용)
+ * cafe 데이터베이스와 테이블 5개를 만든다. (schema.sql 과 같은 내용)
  * MySQL Workbench 가 없을 때 이 파일의 main 을 한 번 실행하면 된다.
  * 여러 번 실행해도 기존 데이터는 지워지지 않는다. (IF NOT EXISTS)
  */
@@ -66,14 +66,16 @@ public class SetupDB {
                     + " CONSTRAINT chk_items_shots CHECK (shots >= 0),"
                     + " CONSTRAINT chk_items_unit_price CHECK (unit_price >= 0),"
                     + " CONSTRAINT chk_items_size CHECK (opt_size IN ('" + Protocol.SIZE_BASIC + "','" + Protocol.SIZE_LARGE + "')),"
-                    + " CONSTRAINT fk_items_order FOREIGN KEY (order_no) REFERENCES cafe.orders (order_no) ON DELETE CASCADE)"
+                    + " CONSTRAINT fk_items_order FOREIGN KEY (order_no) REFERENCES cafe.orders (order_no) ON DELETE CASCADE)",
+
+            "CREATE TABLE IF NOT EXISTS cafe.notices (" + SchemaMigration.NOTICES_COLUMNS + ")"
     };
 
     public static void main(String[] args) {
         try (Connection conn = DBConnect.getServer();
              Statement stmt = conn.createStatement()) {
             for (String sql : SQL) stmt.executeUpdate(sql);
-            System.out.println("cafe 데이터베이스와 테이블 4개(members, menu, orders, order_items) 생성 완료");
+            System.out.println("cafe 데이터베이스와 테이블 5개(members, menu, orders, order_items, notices) 생성 완료");
             System.out.println("이제 AdminMain 을 실행하세요. (첫 실행 때 기본 메뉴 9개가 자동으로 들어갑니다)");
         } catch (SQLException e) {
             System.out.println("DB 생성 오류: " + e.getMessage());

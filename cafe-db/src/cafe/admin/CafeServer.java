@@ -163,15 +163,19 @@ public class CafeServer {
     }
 
     /**
-     * 관리자 공지를 로그인한 모든 회원에게 전송한다. (PUSH|NOTICE|내용)
+     * 관리자 공지를 DB 에 저장하고, 로그인한 모든 회원에게 전송한다. (PUSH|NOTICE|내용|시각)
+     * 저장해 두므로 나중에 로그인한 회원도 공지칸에서 볼 수 있다. (NOTICES 요청)
      * @return 문제가 있으면 오류 메시지, 정상 전송이면 null
      */
     public String sendNotice(String message) {
         String msg = message == null ? "" : message.trim();
         if (!running) return "서버가 실행 중이 아닙니다.";
         if (msg.isEmpty()) return "공지 내용을 입력해 주세요.";
-        broadcast(Protocol.pack("PUSH", Protocol.PUSH_NOTICE, msg));
-        log.accept("[공지] " + msg + " (" + loggedInCount() + "명에게 전송)");
+        if (msg.length() > Notice.MAX_LENGTH) return "공지는 " + Notice.MAX_LENGTH + "자 이내로 입력해 주세요.";
+        Notice n = store.addNotice(msg);
+        if (n == null) return "공지를 저장하지 못했습니다. (DB 오류)";
+        broadcast(Protocol.pack("PUSH", Protocol.PUSH_NOTICE, n.content, String.valueOf(n.time)));
+        log.accept("[공지] " + n.content + " (" + loggedInCount() + "명에게 전송)");
         return null;
     }
 
@@ -323,6 +327,14 @@ public class CafeServer {
                     String[] r = new String[menu.size() + 1];
                     r[0] = "OK";
                     for (int i = 0; i < menu.size(); i++) r[i + 1] = Protocol.pack(menu.get(i).toFields());
+                    send(Protocol.pack(r));
+                    break;
+                }
+                case "NOTICES": {   // 최근 공지 → OK|공지1|공지2|... (공지 = 번호|내용|시각, 최신 순)
+                    List<Notice> list = store.recentNotices(Protocol.NOTICE_COUNT);
+                    String[] r = new String[list.size() + 1];
+                    r[0] = "OK";
+                    for (int i = 0; i < list.size(); i++) r[i + 1] = Protocol.pack(list.get(i).toFields());
                     send(Protocol.pack(r));
                     break;
                 }

@@ -48,6 +48,11 @@ public class MainFrame extends JFrame implements ServerConnection.PushListener {
     private final JSpinner qtySpin = new JSpinner(new SpinnerNumberModel(1, 1, Protocol.MAX_QTY, 1));
     private final JLabel priceLabel = new JLabel(" ");
     private final JButton addBtn = new JButton("장바구니 담기");
+    // 공지칸 (메뉴 주문 탭 오른쪽 아래): 최근 공지를 최신 순으로 보여 준다
+    private final JTextArea noticeArea = new JTextArea(4, 26);
+    private final javax.swing.border.TitledBorder noticeBorder = BorderFactory.createTitledBorder("카페 공지");
+    private final Timer noticeHighlight = new Timer(5000, e -> setNoticeHighlight(false));
+    private final JPanel noticeBox = new JPanel(new BorderLayout());
 
     // 장바구니 탭
     private final DefaultTableModel cartModel = readOnly("메뉴", "옵션", "수량", "단가", "소계");
@@ -123,6 +128,7 @@ public class MainFrame extends JFrame implements ServerConnection.PushListener {
 
     @Override public void dispose() {
         clockTimer.stop();
+        noticeHighlight.stop();
         super.dispose();
     }
 
@@ -170,11 +176,46 @@ public class MainFrame extends JFrame implements ServerConnection.PushListener {
         search.add(searchField);
         search.add(clearSearch);
 
+        // 아래쪽: 왼쪽은 옵션·장바구니 담기, 오른쪽 빈 공간은 공지칸
+        JPanel optWrap = new JPanel(new GridBagLayout());   // 옵션 줄을 공지칸 높이의 가운데에 맞춘다
+        GridBagConstraints gc = new GridBagConstraints();
+        gc.anchor = GridBagConstraints.WEST;
+        gc.weightx = 1;
+        optWrap.add(opt, gc);
+        JPanel south = new JPanel(new BorderLayout());
+        south.add(optWrap, BorderLayout.CENTER);
+        south.add(buildNoticeBox(), BorderLayout.EAST);
+
         JPanel p = new JPanel(new BorderLayout());
         p.add(search, BorderLayout.NORTH);
         p.add(new JScrollPane(menuTable), BorderLayout.CENTER);
-        p.add(opt, BorderLayout.SOUTH);
+        p.add(south, BorderLayout.SOUTH);
         return p;
+    }
+
+    /** 공지칸: 읽기 전용, 긴 공지는 줄바꿈, 넘치면 스크롤 */
+    private JComponent buildNoticeBox() {
+        noticeArea.setEditable(false);
+        noticeArea.setLineWrap(true);
+        noticeArea.setWrapStyleWord(true);
+        noticeArea.setFont(menuTable.getFont());
+        noticeArea.setBackground(new Color(250, 250, 250));
+        noticeArea.setText("공지를 불러오는 중...");
+        noticeHighlight.setRepeats(false);
+        JScrollPane sp = new JScrollPane(noticeArea);
+        sp.setBorder(BorderFactory.createEmptyBorder());
+        sp.setPreferredSize(new Dimension(330, 92));
+        noticeBox.setBorder(BorderFactory.createCompoundBorder(BorderFactory.createEmptyBorder(2, 4, 6, 8), noticeBorder));
+        noticeBox.add(sp, BorderLayout.CENTER);
+        return noticeBox;
+    }
+
+    /** 새 공지가 오면 공지칸을 5초 동안 노란색으로 표시 (새 창은 띄우지 않는다) */
+    private void setNoticeHighlight(boolean on) {
+        noticeArea.setBackground(on ? new Color(255, 246, 200) : new Color(250, 250, 250));
+        noticeBorder.setTitle(on ? "카페 공지 - 새 공지가 도착했습니다" : "카페 공지");
+        noticeBox.repaint();
+        if (on) noticeHighlight.restart();
     }
 
     private JComponent buildCartTab() {
@@ -347,6 +388,22 @@ public class MainFrame extends JFrame implements ServerConnection.PushListener {
         refreshMenu();
         refreshOrders();
         refreshQueue();
+        refreshNotices();
+    }
+
+    /** 서버에서 최근 공지를 받아 공지칸에 표시 (최신 공지가 맨 위) */
+    private void refreshNotices() {
+        UiUtil.async(() -> conn.request("NOTICES"), r -> {
+            if (!r[0].equals("OK")) return;
+            StringBuilder sb = new StringBuilder();
+            for (int i = 1; i < r.length; i++) {
+                Notice n = Notice.fromFields(Protocol.unpack(r[i]));
+                if (sb.length() > 0) sb.append("\n");
+                sb.append("[").append(n.timeText()).append("] ").append(n.content);
+            }
+            noticeArea.setText(sb.length() == 0 ? "등록된 공지가 없습니다." : sb.toString());
+            noticeArea.setCaretPosition(0);   // 최신 공지가 보이도록 맨 위로
+        }, this::onError);
     }
 
     private void refreshMenu() {
@@ -430,8 +487,9 @@ public class MainFrame extends JFrame implements ServerConnection.PushListener {
         SwingUtilities.invokeLater(() -> {
             if (leaving) return;
             if (f.length >= 2 && f[1].equals("MENU")) refreshMenu();
-            if (f.length >= 3 && f[1].equals(Protocol.PUSH_NOTICE)) {
-                JOptionPane.showMessageDialog(this, f[2], "카페 공지", JOptionPane.INFORMATION_MESSAGE);
+            if (f.length >= 3 && f[1].equals(Protocol.PUSH_NOTICE)) {   // 새 창 대신 공지칸에 표시
+                refreshNotices();
+                setNoticeHighlight(true);
             }
             if (f.length >= 5 && f[1].equals("ORDER")) {
                 refreshOrders();
