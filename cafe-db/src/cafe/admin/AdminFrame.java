@@ -32,6 +32,10 @@ public class AdminFrame extends JFrame {
     private final JLabel clientLabel = new JLabel("접속자 0명");
     private final DefaultTableModel orderModel = readOnlyModel("대기번호", "회원", "주문 내용", "금액", "상태", "주문 시각");
     private final JTable orderTable = new JTable(orderModel);
+    private final TableRowSorter<DefaultTableModel> orderSorter = new TableRowSorter<>(orderModel);
+    private final JTextField orderSearchField = new JTextField(20);
+    private final JComboBox<String> orderStatusBox = new JComboBox<>();
+    private final JLabel orderCount = new JLabel(" ");
     // 표의 각 행에 해당하는 주문 고유번호 (표에는 당일 대기번호를 보여 주고, 상태 변경·취소는 이 번호로 한다)
     private final List<Integer> orderRowNos = new ArrayList<>();
     private final JCheckBox showFinished = new JCheckBox("수령 완료/취소 주문도 표시");
@@ -99,7 +103,6 @@ public class AdminFrame extends JFrame {
         setSize(1000, 640);
         setLocationRelativeTo(null);
     }
-
     // ---------------------------------------------------------------- 상단 서버 바
     private JComponent buildTopBar() {
         JPanel bar = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 8));
@@ -111,7 +114,6 @@ public class AdminFrame extends JFrame {
         bar.add(addressLabel);
         bar.add(clientLabel);
         serverBtn.addActionListener(e -> toggleServer());
-
         // 공지 보내기 줄 (로그인한 모든 회원에게 PUSH)
         JPanel noticeBar = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 4));
         noticeBar.add(new JLabel("공지"));
@@ -119,14 +121,12 @@ public class AdminFrame extends JFrame {
         noticeBar.add(noticeBtn);
         noticeBtn.addActionListener(e -> sendNotice());
         noticeField.addActionListener(e -> sendNotice());   // 입력칸에서 Enter 로도 전송
-
         JPanel top = new JPanel(new BorderLayout());
         top.setBorder(BorderFactory.createMatteBorder(0, 0, 1, 0, Color.LIGHT_GRAY));
         top.add(bar, BorderLayout.NORTH);
         top.add(noticeBar, BorderLayout.SOUTH);
         return top;
     }
-
     /** 입력한 공지를 접속 중인 회원에게 전송 */
     private void sendNotice() {
         String err = server.sendNotice(noticeField.getText());
@@ -136,7 +136,6 @@ public class AdminFrame extends JFrame {
         }
         noticeField.setText("");
     }
-
     private void toggleServer() {
         if (server.isRunning()) {
             server.stop();
@@ -172,7 +171,6 @@ public class AdminFrame extends JFrame {
         addressLabel.setText("회원 프로그램에 입력할 주소 ▶ " + addr + "  (포트 " + port + ")");
         updateClientLabel();
     }
-
     private void updateClientLabel() { clientLabel.setText("  접속자 " + server.loggedInCount() + "명"); }
     /** 이 노트북의 사설 IPv4 주소 목록 (와이파이/핫스팟에서 회원 프로그램이 접속할 주소) */
     static List<String> localAddresses() {
@@ -187,10 +185,11 @@ public class AdminFrame extends JFrame {
         } catch (SocketException ignored) {}
         return list;
     }
-
     // ---------------------------------------------------------------- 주문 탭
     private JComponent buildOrderTab() {
         orderTable.setRowHeight(26);
+        orderTable.setRowSorter(orderSorter);
+        orderSorter.setSortsOnUpdates(true);
         orderTable.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
         orderTable.getTableHeader().setReorderingAllowed(false);
         int[] w = { 70, 140, 380, 80, 90, 110 };
@@ -215,7 +214,13 @@ public class AdminFrame extends JFrame {
             if (err != null) JOptionPane.showMessageDialog(this, err);
         });
         export.addActionListener(e -> exportCsv());
-        showFinished.addActionListener(e -> refreshOrders());
+        showFinished.addActionListener(e -> {
+            int index = orderStatusBox.getSelectedIndex();
+            if (!showFinished.isSelected() && index > 0 && Status.values()[index - 1].isFinished()) {
+                orderStatusBox.setSelectedIndex(0);
+            }
+            refreshOrders();
+        });
         JPanel buttons = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 8));
         buttons.add(start);
         buttons.add(ready);
@@ -225,12 +230,57 @@ public class AdminFrame extends JFrame {
         buttons.add(showFinished);
         buttons.add(orderSoundEnabled);
         buttons.add(export);
+        orderStatusBox.addItem("전체 상태");
+        for (Status status : Status.values()) orderStatusBox.addItem(status.label);
+        JButton search = new JButton("검색");
+        JButton reset = new JButton("초기화");
+        search.addActionListener(e -> searchOrders());
+        orderSearchField.addActionListener(e -> searchOrders());
+        orderStatusBox.addActionListener(e -> {
+            int index = orderStatusBox.getSelectedIndex();
+            if (index > 0 && Status.values()[index - 1].isFinished() && !showFinished.isSelected()) {
+                showFinished.setSelected(true);
+                refreshOrders();
+            }
+            searchOrders();
+        });
+        reset.addActionListener(e -> {
+            orderSearchField.setText("");
+            orderStatusBox.setSelectedIndex(0);
+            searchOrders();
+        });
+        JPanel searchPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 4));
+        searchPanel.add(new JLabel("대기번호 / 학번 / 이름 / 메뉴"));
+        searchPanel.add(orderSearchField);
+        searchPanel.add(search);
+        searchPanel.add(orderStatusBox);
+        searchPanel.add(reset);
+        JPanel north = new JPanel(new BorderLayout());
+        north.add(buttons, BorderLayout.NORTH);
+        north.add(searchPanel, BorderLayout.SOUTH);
         JPanel p = new JPanel(new BorderLayout());
-        p.add(buttons, BorderLayout.NORTH);
+        p.add(north, BorderLayout.NORTH);
         p.add(new JScrollPane(orderTable), BorderLayout.CENTER);
+        p.add(orderCount, BorderLayout.SOUTH);
         return p;
     }
-
+    private void searchOrders() {
+        String keyword = orderSearchField.getText().trim().toLowerCase(Locale.ROOT);
+        String status = (String) orderStatusBox.getSelectedItem();
+        orderSorter.setRowFilter(new RowFilter<DefaultTableModel, Integer>() {
+            @Override public boolean include(Entry<? extends DefaultTableModel, ? extends Integer> entry) {
+                boolean matches = keyword.isEmpty();
+                for (int col = 0; col < 3; col++) {
+                    if (entry.getStringValue(col).toLowerCase(Locale.ROOT).contains(keyword)) matches = true;
+                }
+                return matches && (status == null || status.equals("전체 상태") || status.equals(entry.getStringValue(4)));
+            }
+        });
+        updateOrderCount();
+    }
+    private void updateOrderCount() {
+        orderCount.setText("  검색 결과 " + orderSorter.getViewRowCount() + "건 / 조회 대상 " + orderModel.getRowCount() + "건");
+    }
     private void notifyNewOrder(Order order) {
         if (order.status != Status.WAITING || !knownOrderNumbers.add(order.no)) return;
         appendLog("새 주문 접수 대기번호 " + order.displayNo() + "번 - " + order.memberName);
@@ -287,7 +337,6 @@ public class AdminFrame extends JFrame {
         audioThread.setDaemon(true);
         audioThread.start();
     }
-
     /** 선택한 주문의 표 행 번호 (선택 안 했으면 안내 후 -1) */
     private int selectedOrderRow() {
         int row = orderTable.getSelectedRow();
@@ -297,20 +346,17 @@ public class AdminFrame extends JFrame {
         }
         return orderTable.convertRowIndexToModel(row);
     }
-
     /** 선택한 주문의 고유번호 (선택 안 했으면 -1) */
     private int selectedOrderNo() {
         int row = selectedOrderRow();
         return row < 0 ? -1 : orderRowNos.get(row);
     }
-
     private void changeStatus(Status next) {
         int no = selectedOrderNo();
         if (no < 0) return;
         String err = store.setStatus(no, next);
         if (err != null) JOptionPane.showMessageDialog(this, err);
     }
-
     private void exportCsv() {
         JFileChooser fc = new JFileChooser();
         fc.setSelectedFile(new File("주문내역_" + new SimpleDateFormat("yyyyMMdd_HHmm").format(new Date()) + ".csv"));
@@ -323,7 +369,6 @@ public class AdminFrame extends JFrame {
             JOptionPane.showMessageDialog(this, "저장 실패: " + e.getMessage(), "오류", JOptionPane.ERROR_MESSAGE);
         }
     }
-
     private void refreshOrders() {
         int keepNo = -1;
         int sel = orderTable.getSelectedRow();
@@ -343,6 +388,7 @@ public class AdminFrame extends JFrame {
                 if (v >= 0) orderTable.setRowSelectionInterval(v, v);
             }
         }
+        updateOrderCount();
     }
     /** 상태 칸 색상 */
     private static class StatusRenderer extends DefaultTableCellRenderer {
@@ -360,7 +406,6 @@ public class AdminFrame extends JFrame {
             return comp;
         }
     }
-
     // ---------------------------------------------------------------- 메뉴 · 재고 탭
     private JComponent buildMenuTab() {
         menuTable.setRowHeight(26);
@@ -416,7 +461,6 @@ public class AdminFrame extends JFrame {
         p.add(hint, BorderLayout.SOUTH);
         return p;
     }
-
     private MenuItem selectedMenu() {
         int row = menuTable.getSelectedRow();
         if (row < 0) {
@@ -427,7 +471,6 @@ public class AdminFrame extends JFrame {
         for (MenuItem m : store.menuSnapshot()) if (m.id == id) return m;
         return null;
     }
-
     private MenuItem menuDialog(MenuItem cur) {
         JComboBox<String> cat = new JComboBox<>(new String[] { "커피", "논커피", "에이드/티", "디저트" });
         cat.setEditable(true);
@@ -460,7 +503,6 @@ public class AdminFrame extends JFrame {
             }
         }
     }
-
     private void refreshMenu() {
         int keepId = -1;
         int sel = menuTable.getSelectedRow();
@@ -485,14 +527,12 @@ public class AdminFrame extends JFrame {
             }
         }
     }
-
     // ---------------------------------------------------------------- 매출 통계 탭
     // 일별 / 주별 / 월별 중 하나와 기간을 고르면 메뉴별 판매 수량·매출, 날짜별 매출, 주문 목록을 보여 주고 CSV 로 내보낸다.
     private SalesPeriod statsPeriod() {
         SalesPeriod p = (SalesPeriod) statsPeriodBox.getSelectedItem();
         return p == null ? SalesPeriod.DAY : p;
     }
-
     private JComponent buildStatsTab() {
         statsDateBox.setRenderer(new DefaultListCellRenderer() {
             @Override public Component getListCellRendererComponent(JList<?> list, Object value, int index,
@@ -580,7 +620,6 @@ public class AdminFrame extends JFrame {
         LocalDate sel = (LocalDate) statsDateBox.getSelectedItem();
         if (sel == null || statsPeriod().contains(sel, LocalDate.now())) refreshStats();
     }
-
     private void showStats() {
         LocalDate start = (LocalDate) statsDateBox.getSelectedItem();
         if (start == null) return;
@@ -621,7 +660,6 @@ public class AdminFrame extends JFrame {
                     o.memberName + " (" + o.memberId + ")", o.summary(), UiUtil.won(o.total()), o.status.label });
         }
     }
-
     private void exportStatsCsv() {
         LocalDate start = (LocalDate) statsDateBox.getSelectedItem();
         if (start == null) return;
@@ -637,7 +675,6 @@ public class AdminFrame extends JFrame {
             JOptionPane.showMessageDialog(this, "저장 실패: " + e.getMessage(), "오류", JOptionPane.ERROR_MESSAGE);
         }
     }
-
     // ---------------------------------------------------------------- 회원 / 로그
     private JComponent buildMemberTab() {
         JTable t = new JTable(memberModel);
@@ -667,7 +704,6 @@ public class AdminFrame extends JFrame {
         p.add(memberCount, BorderLayout.SOUTH);
         return p;
     }
-
     private void forceWithdrawMember(JTable table) {
         int row = table.getSelectedRow();
         if (row < 0) {
@@ -687,7 +723,6 @@ public class AdminFrame extends JFrame {
         refreshMembers();
         JOptionPane.showMessageDialog(this, "회원 강제 탈퇴가 완료되었습니다.");
     }
-
     private void searchMembers() {
         String keyword = memberSearchField.getText().trim();
         if (keyword.isEmpty()) {
@@ -698,7 +733,6 @@ public class AdminFrame extends JFrame {
         }
         updateMemberCount();
     }
-
     private void updateMemberCount() {
         int total = memberModel.getRowCount();
         int shown = memberSorter.getViewRowCount();
@@ -708,20 +742,17 @@ public class AdminFrame extends JFrame {
             memberCount.setText("  검색 결과 " + shown + "명 / 전체 " + total + "명");
         }
     }
-
     private void refreshMembers() {
         memberModel.setRowCount(0);
         List<Member> list = store.membersSnapshot();
         for (Member m : list) memberModel.addRow(new Object[] { m.id, m.name, m.email });
         updateMemberCount();
     }
-
     private JComponent buildLogTab() {
         logArea.setEditable(false);
         logArea.setLineWrap(true);
         return new JScrollPane(logArea);
     }
-
     private void appendLog(String msg) {
         String line = "[" + logFmt.format(new Date()) + "] " + msg + "\n";
         SwingUtilities.invokeLater(() -> {
@@ -729,7 +760,6 @@ public class AdminFrame extends JFrame {
             logArea.setCaretPosition(logArea.getDocument().getLength());
         });
     }
-
     private void onClose() {
         if (server.isRunning()) {
             int r = JOptionPane.showConfirmDialog(this, "서버가 실행 중입니다. 종료하면 접속 중인 회원 프로그램의 연결이 끊어집니다.\n종료할까요?",
@@ -740,18 +770,15 @@ public class AdminFrame extends JFrame {
         dispose();
         System.exit(0);
     }
-
     private static DefaultTableModel readOnlyModel(String... cols) {
         return new DefaultTableModel(cols, 0) {
             @Override public boolean isCellEditable(int r, int c) { return false; }
         };
     }
-
     /** 시간대별 주문 비중을 가로 막대 + 퍼센트로 그리는 표 칸 (가장 많은 시간대 = 칸 너비 가득) */
     private static class ShareBarRenderer extends DefaultTableCellRenderer {
         private double share;     // 0 ~ 1
         private double max = 1;   // 표에서 가장 큰 비중 (막대 길이 기준)
-
         @Override public Component getTableCellRendererComponent(JTable t, Object v, boolean sel, boolean foc, int r, int c) {
             super.getTableCellRendererComponent(t, "", sel, foc, r, c);
             share = v instanceof Double ? (Double) v : -1;
@@ -763,7 +790,6 @@ public class AdminFrame extends JFrame {
             if (max <= 0) max = 1;
             return this;
         }
-
         @Override protected void paintComponent(Graphics g) {
             super.paintComponent(g);
             if (share < 0) return;
